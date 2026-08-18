@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glass-kit · 毛玻璃与高斯模糊动效演示</title>
+<link rel="stylesheet" href="./glass-kit.css">
+<style>
+  /* ===== 仅演示页自用的排版，不属于套件 ===== */
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  /* 顶栏改为 fixed 悬浮胶囊后不再占文档流，正文要补出它的身高 */
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 6.5rem 1.25rem 6rem; }
+  /* 悬浮圆角胶囊导航：fixed + 左右边距 + max-width 水平居中（不能用 translateX
+     居中 —— transform 被 .smart-navbar 的收回/现形占用，同属性会互相覆盖） */
+  .topbar { position: fixed; top: 0.75rem; left: 1.25rem; right: 1.25rem; z-index: 30;
+           max-width: 1350px; margin: 0 auto; padding: 0.7rem 1.25rem; border-radius: 18px; }
+  .topbar h1 { margin: 0; font-size: 1rem; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255,255,255,0.9); }
+  .topbar p { margin: 0.35rem 0 0; font-size: 0.75rem; color: rgba(255,255,255,0.5); }
+  .section-title { margin: 3.5rem 0 1.25rem; font-size: 0.78rem; letter-spacing: 0.3em; text-transform: uppercase;
+                   color: rgba(163,230,53,0.75); }
+  .hint { font-size: 0.8rem; line-height: 1.7; color: rgba(255,255,255,0.55); max-width: 62ch; }
+  .hint b { color: rgba(255,255,255,0.85); font-weight: 600; }
+  .card-body { padding: 0.85rem 1rem 1rem; }
+  .card-title { margin: 0 0 0.4rem; font-size: 0.95rem; font-weight: 600; color: rgba(255,255,255,0.95);
+                text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+  .card-meta { display: flex; justify-content: space-between; font-size: 0.7rem; color: rgba(255,255,255,0.45); }
+  .card-media { aspect-ratio: 3 / 4; }
+  .card-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .card-pop img { pointer-events: none; }
+  .panel-row { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .panel-glass { border-radius: 20px; padding: 1.1rem 0; }
+  .panel-glass h3 { margin: 0 1.4rem 0.9rem; font-size: 0.85rem; letter-spacing: 0.1em; color: rgba(255,255,255,0.9); }
+  .menu-item { color: rgba(255,255,255,0.72); font-size: 0.85rem; cursor: pointer; }
+  .field { position: relative; margin: 0 1.4rem; padding: 0.7rem 0; border-bottom: 1px solid rgba(255,255,255,0.14);
+           font-size: 0.85rem; color: rgba(255,255,255,0.6); }
+  .glass-dropdown { border-radius: 14px; padding: 0.4rem; width: 200px; }
+  .glass-dropdown [role="menuitem"] { display: block; padding: 0.55rem 0.8rem; border-radius: 9px; font-size: 0.83rem; }
+  .bar { position: relative; height: 22px; border-radius: 999px; overflow: hidden;
+         background: linear-gradient(180deg, #a3e635, #65a30d); margin: 0 1.4rem; }
+  .footnote { margin-top: 4rem; font-size: 0.72rem; color: rgba(255,255,255,0.35); }
+  .neon-line { font-family: ui-monospace, "SF Mono", "Consolas", monospace; font-size: 0.85rem;
+               margin: 0.45rem 0; word-break: break-all; }
+  .led-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+             gap: 1.25rem; margin-top: 1.25rem; }
+  .led-cell { padding: 1rem 0.5rem 0.8rem; display: flex; justify-content: center; }
+  /* JS 关闭时兜底：入场类会把卡片钉在 opacity:0 的雾态，必须放行 */
+  .no-js .enter-onview .glass-card { opacity: 1 !important; filter: none !important; transform: none !important; }
+</style>
+</head>
+<body class="no-js">
+
+<!-- 背景三层：backdrop-filter 的采样源。缺了它玻璃就没东西可糊 -->
+<div class="bg-texture"></div>
+<div class="grid-texture"></div>
+<div class="particles" id="particles"></div>
+
+<div class="wrap">
+
+  <header class="topbar navbar-blur glass-top-sheen smart-navbar" id="topbar">
+    <h1>glass-kit</h1>
+    <p>暗底毛玻璃 + 高斯模糊入场动效 · 自包含演示（无构建、无依赖、不联网）</p>
+  </header>
+
+  <p class="hint">
+    <b>怎么验证：</b>① 鼠标在卡片上移动，卡片应跟手倾斜、封面图以更慢速度反向错动；
+    ② 悬停一张卡时同排其余卡应轻微缩小后退，并有一道斜光扫过卡面；
+    ③ 滚到底再滚回顶，入场的「雾中浮现」应<b>重播</b>；
+    ④ 系统开启「减少动态效果」后刷新，位移与流光应全停、颜色与发光仍在；
+    ⑤ 顶部导航是悬浮圆角胶囊：<b>往下滚它向上收走，往回滚立刻出现</b>。
+    <br>触屏设备上 hover 类效果应<b>完全不出现</b>（这是刻意门控，不是 bug）。
+    <br><b>注：</b>标着「带越框主体」的卡需要浏览器支持 <code>mask-mode: luminance</code>
+    （Chrome 120+ / Safari 15.4+）。不支持时该层被 <code>@supports</code> 门控整层隐藏、
+    卡片其余部分照常 —— 这也是刻意的降级，不是没做出来。
+  </p>
+
+  <h2 class="section-title">滑动高亮 · 果冻跟随</h2>
+  <p class="hint" style="margin-bottom:1rem">
+    鼠标在下面几个选项之间来回移动 —— 凹陷高亮块应<b>带过冲地弹性滑移</b>，宽度同步变化；
+    移出整条时淡出但<b>不归零</b>，再进来是从上次停留处滑过去。
+    <b>点击</b>切换选中项时，绿色发光胶囊应<b>从旧选项滑到新选项</b>，而不是瞬移跳变
+    （触屏没有 hover 凹陷块，但选中胶囊照常跟随点击）。
+  </p>
+  <div class="jelly-nav" id="jnav" role="tablist" aria-label="演示分区">
+    <div class="jelly-nav-indicator" id="jnavInd" aria-hidden></div>
+    <div class="jelly-nav-active" id="jnavAct" aria-hidden></div>
+    <button type="button" role="tab" aria-selected="true" class="jelly-nav-item is-active">收藏</button>
+    <button type="button" role="tab" aria-selected="false" class="jelly-nav-item">最近播放</button>
+    <button type="button" role="tab" aria-selected="false" class="jelly-nav-item">全部</button>
+    <button type="button" role="tab" aria-selected="false" class="jelly-nav-item">很长的一个选项名</button>
+  </div>
+
+  <h2 class="section-title">卡片三层结构</h2>
+  <div class="card-grid" id="grid"></div>
+
+  <h2 class="section-title">玻璃面板与点缀</h2>
+  <div class="panel-row">
+
+    <div class="panel-glass">
+      <div class="panel-sheen"></div>
+      <h3>侧边光条菜单</h3>
+      <div class="menu-item"><span>账号设置</span><span class="menu-arrow">›</span></div>
+      <div class="menu-item"><span>通知偏好</span><span class="menu-arrow">›</span></div>
+      <div class="menu-item"><span>外观主题</span><span class="menu-arrow">›</span></div>
+      <div class="menu-item is-danger"><span>退出登录</span><span class="menu-arrow">›</span></div>
+    </div>
+
+    <div class="panel-glass">
+      <h3>扫掠细线 / 加载指示</h3>
+      <div class="field">输入行落定时扫过一次<div class="line-sweep"></div></div>
+      <div class="field">加载中循环扫掠<div class="line-sweep is-loading"></div></div>
+      <div style="margin:1.2rem 1.4rem 0;display:flex;align-items:center;gap:0.8rem">
+        <div class="loader"></div>
+        <span style="font-size:0.8rem;color:rgba(255,255,255,0.5)">.loader</span>
+      </div>
+    </div>
+
+    <div class="panel-glass">
+      <h3>危险斜纹条</h3>
+      <div class="bar"><div class="hazard-stripes"></div></div>
+      <p class="hint" style="margin:1rem 1.4rem 0;font-size:0.75rem">
+        条纹靠 <code>transform</code> 平移一个周期无缝循环，不用 <code>background-position</code>
+        （那会每帧重绘）。
+      </p>
+    </div>
+
+    <div class="panel-glass" style="display:flex;flex-direction:column;align-items:center;gap:1rem">
+      <h3 style="align-self:flex-start">下拉弹层</h3>
+      <div class="glass-dropdown" data-state="open" id="dd">
+        <div role="menuitem" data-highlighted>个人主页</div>
+        <div role="menuitem">我的收藏</div>
+        <div role="separator" style="height:1px;margin:0.3rem 0.5rem"></div>
+        <div role="menuitem">设置</div>
+      </div>
+      <button id="ddToggle" style="background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.18);
+        border-radius:10px;padding:0.45rem 1rem;font-size:0.8rem;cursor:pointer">重播进/退场</button>
+    </div>
+
+  </div>
+
+  <h2 class="section-title">果冻形变 · 按钮 ⇄ 弹窗</h2>
+  <p class="hint">
+    点右下角那颗按钮：弹窗应<b>从按钮位飞行放大弹入</b>，一团强调色果冻皮在中途（240ms）
+    溶解、露出深色面板底继续弹到位，最后（480ms）点亮内容、<b>毛玻璃同步淡入</b>
+    （面板后面的背景应明显变糊）。再点遮罩或按 <kbd>Esc</kbd> 反向收回 ——
+    收回动作应当一气呵成，<b>收尾没有停顿</b>，按钮在回缩到位同帧小弹一下归位。
+    <br>注意打开瞬间角落的按钮是<b>瞬撤</b>而非淡出 —— 否则会出现「两团绿」连闪。
+  </p>
+
+  <h2 class="section-title">霓虹文字 · 颜文字 LED 点阵</h2>
+  <p class="hint" style="margin-bottom:1rem">
+    直播页终端美学的可移植部分（套件第 12 节）。验证点：① 八条霓虹字各自带<b>错峰的偶尔微抖</b>
+    -- 老霓虹管接触不良感，不是齐抖；② 每条颜文字点阵整条<b>轻轻浮动</b>，
+    稀疏「坏灯珠」忽明忽暗；③ 颜文字长短不一（短的 4 个零件、长的 17 个），
+    灯珠尺寸按容器宽度自适应，<b>整条都完整显示</b>；④ 系统开启「减少动态效果」后刷新，
+    抖动与浮动全停、颜色与发光保留。
+  </p>
+  <div class="panel-glass" style="padding:1.1rem 1.4rem">
+    <div class="neon-line"><span class="neon-cyan neon-flicker" style="--flicker-delay:0.4">&gt;&gt;&gt;</span> <span class="neon-cyan neon-flicker" style="--flicker-delay:1.7">&gt;&gt; 青岚:</span> <span class="neon-cyan neon-flicker" style="--flicker-delay:2.9">信号接入成功，晚上好</span></div>
+    <div class="neon-line"><span class="neon-green neon-flicker" style="--flicker-delay:5.1">///</span> <span class="neon-green neon-flicker" style="--flicker-delay:3.3">&gt;&gt; 六花:</span> <span class="neon-green neon-flicker" style="--flicker-delay:6.0">今天也会好好陪着大家</span></div>
+    <div class="neon-line"><span class="neon-pink neon-flicker" style="--flicker-delay:2.2">###</span> <span class="neon-pink neon-flicker" style="--flicker-delay:4.8">&gt;&gt; 幻想:</span> <span class="neon-pink neon-flicker" style="--flicker-delay:0.9">贴贴！ε=ε=ε=┌(;￣▽￣)┘</span></div>
+    <div class="neon-line"><span class="neon-yellow neon-flicker" style="--flicker-delay:1.5">:::</span> <span class="neon-yellow neon-flicker" style="--flicker-delay:6.3">&gt;&gt; 阿虚:</span> <span class="neon-yellow neon-flicker" style="--flicker-delay:3.7">这份羁绊收下了</span></div>
+    <div class="neon-line"><span class="neon-red neon-flicker" style="--flicker-delay:4.1">[!]</span> <span class="neon-red neon-flicker" style="--flicker-delay:0.6">&gt;&gt; 药水:</span> <span class="neon-red neon-flicker" style="--flicker-delay:5.5">测试环境的灯管该换了</span></div>
+    <div class="neon-line"><span class="neon-purple neon-flicker" style="--flicker-delay:3.0">~~~</span> <span class="neon-purple neon-flicker" style="--flicker-delay:2.4">&gt;&gt; 紫音:</span> <span class="neon-purple neon-flicker" style="--flicker-delay:6.6">夜色和紫色最配了</span></div>
+    <div class="neon-line"><span class="neon-orange neon-flicker" style="--flicker-delay:5.8">===</span> <span class="neon-orange neon-flicker" style="--flicker-delay:1.1">&gt;&gt; 夏橙:</span> <span class="neon-orange neon-flicker" style="--flicker-delay:4.4">下班路上的第无数颗星</span></div>
+    <div class="neon-line"><span class="neon-lime neon-flicker" style="--flicker-delay:2.7">+++</span> <span class="neon-lime neon-flicker" style="--flicker-delay:5.2">&gt;&gt; 苔米:</span> <span class="neon-lime neon-flicker" style="--flicker-delay:0.3">今天也在角落安静发芽</span></div>
+    <div class="neon-line"><span class="neon-pink">&gt;&gt;&gt; 正在输入<span class="neon-cursor typing"></span></span></div>
+  </div>
+  <div class="led-row" id="ledRow"></div>
+
+  <h2 class="section-title">影院海报墙 · 霓虹跑马灯</h2>
+  <p class="hint" style="margin-bottom:1rem">
+    影院模式的可移植部分（套件第 13、14 节）。验证点：① 海报墙整体<b>斜向</b>排列，
+    相邻列<b>一来一回</b>反方向滚动、各列速度不同；② 鼠标悬停某列时<b>整列停滚</b>；
+    ③ 悬停某张海报时它上抬发光、<b>其余全部降亮</b>（聚光灯）；④ 上下两条霓虹跑马灯
+    反方向滚动、闪烁<b>错峰</b>（不同步闪）；⑤ 系统开启「减少动态效果」后刷新：
+    列停滚、跑马灯停走、闪烁全停，但排版与颜色不变。
+  </p>
+
+  <!-- 上霓虹条：向左滚（等价 NeonMarquee.tsx direction="left" duration=42） -->
+  <div class="neon-marquee neon-marquee-bold neon-marquee-pink">
+    <div class="neon-marquee-leds" aria-hidden></div>
+    <div class="neon-marquee-track to-left" style="animation-duration:42s">
+      <span class="neon-marquee-text">ホタル・シアター • FIREFLY CINEMA • NOW PLAYING • 映画祭 • NIGHT SHOW • 夜の劇場</span><span class="neon-marquee-text">ホタル・シアター • FIREFLY CINEMA • NOW PLAYING • 映画祭 • NIGHT SHOW • 夜の劇場</span>
+    </div>
+    <div class="neon-marquee-highlight-top" aria-hidden></div>
+    <div class="neon-marquee-highlight-bottom" aria-hidden></div>
+  </div>
+
+  <!-- 中间舞台：海报墙（等价 CinemaWall.tsx，卡片由页尾脚本生成） -->
+  <div class="cinema-stage" id="cinemaStage" style="height:min(60vh,560px)"></div>
+
+  <!-- 下霓虹条：向右滚 + 负延迟错峰闪烁（direction="right" duration=48 flickerDelay=-2.3） -->
+  <div class="neon-marquee neon-marquee-bold neon-marquee-pink" style="--neon-flicker-delay:-2.3s">
+    <div class="neon-marquee-leds" aria-hidden></div>
+    <div class="neon-marquee-track to-right" style="animation-duration:48s">
+      <span class="neon-marquee-text">COMING SOON • 次回予告 • MIDNIGHT SCREENING • 试写会 • STAY TUNED</span><span class="neon-marquee-text">COMING SOON • 次回予告 • MIDNIGHT SCREENING • 试写会 • STAY TUNED</span>
+    </div>
+    <div class="neon-marquee-highlight-top" aria-hidden></div>
+    <div class="neon-marquee-highlight-bottom" aria-hidden></div>
+  </div>
+
+  <!-- soft + lime 变体：不闪烁的安静氛围条（登录/注册等场景用） -->
+  <p class="hint" style="margin:1.5rem 0 0.8rem">
+    下面是 <code>variant="soft" color="lime"</code> 组合：更薄、光晕收敛、<b>不闪烁</b>，
+    适合放在登录页等需要安静氛围的地方。
+  </p>
+  <div class="neon-marquee neon-marquee-soft neon-marquee-lime">
+    <div class="neon-marquee-leds" aria-hidden></div>
+    <div class="neon-marquee-track to-left" style="animation-duration:60s">
+      <span class="neon-marquee-text">静かな夜にようこそ • WELCOME TO THE QUIET NIGHT</span><span class="neon-marquee-text">静かな夜にようこそ • WELCOME TO THE QUIET NIGHT</span>
+    </div>
+    <div class="neon-marquee-highlight-top" aria-hidden></div>
+    <div class="neon-marquee-highlight-bottom" aria-hidden></div>
+  </div>
+
+  <p class="footnote">
+    本页的倾斜、入场、滑动高亮、果冻形变、霓虹文字、LED 点阵、影院海报墙与霓虹跑马灯
+    均用原生 JS 实现（见页尾脚本），逻辑与 CardTilt.tsx / EnterOnView.tsx / JellyNav.tsx /
+    JellyMorph.tsx / MoodFace.tsx（数据在 mood-faces.ts）/ CinemaWall.tsx / NeonMarquee.tsx
+    等价，可作为 vanilla 版参考。
+    样式全部来自 glass-kit.css，本页未覆盖任何套件规则。
+  </p>
+
+</div>
+
+<!-- 果冻形变：按钮 + 遮罩 + 面板（真实项目里由 JellyMorph.tsx 用 Portal 挂到 body） -->
+<div class="jelly-morph-overlay" id="jmOverlay" aria-hidden></div>
+<div class="jelly-morph-layer" id="jmLayer">
+  <button type="button" class="jelly-fab" id="jmFab" aria-label="打开演示弹窗" style="pointer-events:auto">
+    <span class="jelly-fab-icon" style="font-size:1.6rem;line-height:1">＋</span>
+    <span class="jelly-fab-ping" aria-hidden></span>
+  </button>
+  <div class="jelly-morph-panel" id="jmPanel" role="dialog" aria-modal="true"
+       aria-label="演示弹窗" hidden>
+    <div class="jelly-morph-glass" id="jmGlass" aria-hidden></div>
+    <div class="jelly-morph-skin" id="jmSkin" aria-hidden></div>
+    <div class="jelly-morph-form" id="jmForm">
+      <div style="padding:1.4rem 1.5rem 1.6rem">
+        <h3 style="margin:0 0 0.9rem;font-size:1rem;color:rgba(255,255,255,0.92)">果冻形变演示</h3>
+        <p style="margin:0 0 1.1rem;font-size:0.82rem;line-height:1.75;color:rgba(255,255,255,0.6)">
+          这一层就是「点亮」阶段才显示的内容。真实项目里它通常是带
+          <code>backdrop-filter</code> 的表单 —— 缩放途中绘制毛玻璃会逐帧重采样卡顿，
+          所以必须等 scale 贴近 1 才点亮。
+        </p>
+        <div class="field" style="margin:0 0 0.9rem">标题输入行<div class="line-sweep"></div></div>
+        <div class="field" style="margin:0 0 1.3rem">正文输入行</div>
+        <button type="button" id="jmClose"
+          style="background:rgba(163,230,53,0.16);color:#d9f99d;border:1px solid rgba(163,230,53,0.4);
+                 border-radius:12px;padding:0.55rem 1.2rem;font-size:0.85rem;cursor:pointer">
+          收回
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.body.classList.remove("no-js");
+
+/* ========== 智能隐藏导航：下滑收走、上滑现形（驱动 .smart-navbar） ==========
+   4px 回差防抖：避免在阈值附近来回切换闪动；顶部 72px 内永不隐藏 */
+const topbar = document.getElementById("topbar");
+let navLastY = window.scrollY, navTicking = false;
+addEventListener("scroll", () => {
+  if (navTicking) return;
+  navTicking = true;
+  requestAnimationFrame(() => {          // rAF 节流：每帧最多切一次类
+    navTicking = false;
+    const y = window.scrollY;
+    if (y > 72 && y > navLastY + 4) topbar.classList.add("is-hidden");
+    else if (y < navLastY - 4 || y <= 72) topbar.classList.remove("is-hidden");
+    topbar.classList.toggle("is-scrolled", y > 8);
+    navLastY = y;
+  });
+}, { passive: true });
+
+/* ========== 假数据：封面用内联 SVG，避免任何外部资源 ========== */
+const HUES = [92, 140, 48, 310, 200, 20, 265, 160];
+function cover(hue, i) {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='300' height='400'>
+    <defs><radialGradient id='g' cx='50%' cy='38%' r='62%'>
+      <stop offset='0%' stop-color='hsl(${hue} 85% 68%)'/>
+      <stop offset='55%' stop-color='hsl(${hue} 60% 34%)'/>
+      <stop offset='100%' stop-color='hsl(${hue + 20} 45% 12%)'/>
+    </radialGradient></defs>
+    <rect width='300' height='400' fill='url(#g)'/>
+    <circle cx='150' cy='150' r='72' fill='hsl(${hue} 90% 78%)' opacity='0.85'/>
+    <circle cx='150' cy='150' r='72' fill='none' stroke='rgba(255,255,255,0.6)' stroke-width='3'/>
+    <text x='150' y='168' font-family='monospace' font-size='58' font-weight='bold'
+          text-anchor='middle' fill='rgba(20,20,30,0.75)'>${i}</text>
+    <rect y='300' width='300' height='100' fill='rgba(0,0,0,0.25)'/>
+  </svg>`;
+  return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+}
+/* 主体遮罩：中心白、四周黑的灰度图 → luminance mask 抠出中间那个圆 */
+const MASK = "data:image/svg+xml;utf8," + encodeURIComponent(
+  `<svg xmlns='http://www.w3.org/2000/svg' width='300' height='400'>
+     <rect width='300' height='400' fill='black'/>
+     <circle cx='150' cy='150' r='78' fill='white'/>
+   </svg>`);
+
+const TITLES = ["雾中浮现", "跟手倾斜", "聚焦景深", "斜向流光", "越框弹出", "廉价重播",
+                "玻璃层级", "合成器纪律", "门控矩阵", "令牌派生", "无障碍降级", "瓦片兜底"];
+
+/* ========== 建卡片：4 列瀑布流，第 3n 张带主体越框弹出 ========== */
+const COLS = window.innerWidth < 768 ? 2 : window.innerWidth < 1280 ? 3 : 4;
+const grid = document.getElementById("grid");
+const columns = Array.from({ length: COLS }, () => {
+  const c = document.createElement("div");
+  c.className = "card-grid-column";
+  grid.appendChild(c);
+  return c;
+});
+
+TITLES.forEach((title, i) => {
+  const hue = HUES[i % HUES.length];
+  const hasPop = i % 3 === 0;               // 每三张演示一次主体越框弹出
+  const src = cover(hue, i + 1);
+
+  const shell = document.createElement("div");
+  shell.className = "card-shell enter-onview";
+
+  const tilt = document.createElement("div");
+  tilt.className = "card-tilt";
+
+  tilt.innerHTML =
+    '<div class="glass-card">' +
+      '<div class="card-media"><img alt="" src="' + src + '"></div>' +
+      '<div class="frosted-glass"><div class="card-body">' +
+        '<p class="card-title">' + title + '</p>' +
+        '<div class="card-meta"><span>' + (hasPop ? "带越框主体" : "标准卡") + '</span>' +
+        '<span>#' + String(i + 1).padStart(2, "0") + '</span></div>' +
+      '</div></div>' +
+    '</div>' +
+    (hasPop
+      ? '<div class="card-pop" style="aspect-ratio:3/4">' +
+          '<img alt="" src="' + src + '" style="mask-image:url(' + MASK + ');' +
+          '-webkit-mask-image:url(' + MASK + ');mask-mode:luminance;-webkit-mask-mode:luminance;' +
+          'mask-size:100% 100%;-webkit-mask-size:100% 100%">' +
+        '</div>'
+      : "");
+
+  shell.appendChild(tilt);
+  columns[i % COLS].appendChild(shell);
+});
+
+/* ========== 入场：两段式雾中浮现（等价 EnterOnView.tsx） ==========
+   未进入视口时不挂 animation，只保持雾态 → 下次加类是全新声明，必然从 0% 播。
+   离开视口摘类 → 回到雾态，为重播做准备。 */
+const IS_ANDROID_LIKE = /Android|Harmony/i.test(navigator.userAgent);
+const played = new WeakSet();
+
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const el = e.target;
+    if (e.isIntersecting) {
+      // 低端安卓：首次仍走 blur，此后重播改纯 transform 的廉价动画
+      if (IS_ANDROID_LIKE && played.has(el)) el.classList.add("enter-replay");
+      el.classList.add("enter-visible");
+      if (IS_ANDROID_LIKE) played.add(el);
+    } else {
+      el.classList.remove("enter-visible");
+    }
+  }
+}, { threshold: 0.05, rootMargin: "100px 0px" });
+
+document.querySelectorAll(".card-shell").forEach((el) => {
+  // 安卓降耗类：带越框主体的卡必须用 cv-lite
+  // （cv-auto 的 content-visibility 自带 paint containment，会把主体裁在容器盒内）
+  if (IS_ANDROID_LIKE) {
+    el.classList.add(el.querySelector(".card-pop") ? "cv-lite" : "cv-auto");
+  }
+  io.observe(el);
+});
+
+/* ========== 3D 跟手倾斜（等价 CardTilt.tsx） ========== */
+const MAX_TILT_X = 6, MAX_TILT_Y = 8;
+const PARALLAX_X = 10, PARALLAX_Y = 6;
+const SHADOW_SHIFT = 12;
+const TILT_VARS = ["--tilt-x", "--tilt-y", "--card-par-x", "--card-par-y",
+                   "--tilt-shadow-x", "--tilt-shadow-y"];
+
+const tiltEnabled =
+  matchMedia("(hover: hover) and (pointer: fine)").matches &&
+  !matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+if (tiltEnabled) {
+  document.querySelectorAll(".card-tilt").forEach((el) => {
+    let frame = 0, center = null, last = { x: 0, y: 0 };
+
+    el.addEventListener("mouseenter", () => {
+      // 进入时缓存几何中心：倾斜中 getBoundingClientRect 会把自身 transform
+      // 算进去，逐帧取会拿到「已旋转」的矩形导致抖动
+      const r = el.getBoundingClientRect();
+      center = { cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: r.width, h: r.height };
+      el.classList.add("is-tilting");
+    });
+
+    el.addEventListener("mousemove", (e) => {
+      last = { x: e.clientX, y: e.clientY };
+      if (!center || frame) return;
+      frame = requestAnimationFrame(() => {          // rAF 节流：每帧最多写一次样式
+        frame = 0;
+        if (!center) return;
+        const px = Math.max(-0.5, Math.min(0.5, (last.x - center.cx) / center.w));
+        const py = Math.max(-0.5, Math.min(0.5, (last.y - center.cy) / center.h));
+        el.style.setProperty("--tilt-x", (-py * 2 * MAX_TILT_X).toFixed(2) + "deg");
+        el.style.setProperty("--tilt-y", (px * 2 * MAX_TILT_Y).toFixed(2) + "deg");
+        el.style.setProperty("--card-par-x", (px * 2 * PARALLAX_X).toFixed(1) + "px");
+        el.style.setProperty("--card-par-y", (py * 2 * PARALLAX_Y).toFixed(1) + "px");
+        el.style.setProperty("--tilt-shadow-x", (-px * 2 * SHADOW_SHIFT).toFixed(1) + "px");
+        el.style.setProperty("--tilt-shadow-y", (-py * 2 * SHADOW_SHIFT).toFixed(1) + "px");
+      });
+    });
+
+    el.addEventListener("mouseleave", () => {
+      cancelAnimationFrame(frame); frame = 0; center = null;
+      TILT_VARS.forEach((v) => el.style.removeProperty(v));
+      el.classList.remove("is-tilting");   // transform 回落 none，由基础态 0.45s 平滑回正
+    });
+  });
+}
+
+/* ========== 背景粒子 ========== */
+const pc = document.getElementById("particles");
+for (let i = 0; i < 26; i++) {
+  const p = document.createElement("div");
+  p.className = "particle";
+  p.style.left = (Math.random() * 100).toFixed(2) + "%";
+  p.style.top = (Math.random() * 100).toFixed(2) + "%";
+  p.style.animationDelay = (-Math.random() * 20).toFixed(2) + "s";
+  pc.appendChild(p);
+}
+
+/* ========== 滑动高亮：果冻跟随（等价 JellyNav.tsx） ==========
+   量的是「按钮左边缘相对容器左边缘」的距离 —— 用相对量而非视口绝对量，
+   页面滚动时无需重算。弹性来自 CSS 的过冲贝塞尔，不需要动画库。
+   两块滑动块各管各的：凹陷块跟 hover（指针反馈），发光胶囊跟 .is-active（状态）。 */
+const jnav = document.getElementById("jnav");
+const jnavInd = document.getElementById("jnavInd");
+const jnavAct = document.getElementById("jnavAct");
+const hoverCapable = matchMedia("(hover: hover) and (pointer: fine)").matches;
+
+/* 选中胶囊定位。animate=false 用于首帧与尺寸变化后的归位：必须瞬移，
+   否则会带着弹性从一个错误位置滑过来。no-anim + 强制 reflow 是标准手法 */
+function jnavMoveActive(animate) {
+  const btn = jnav.querySelector(".jelly-nav-item.is-active");
+  if (!btn) { jnavAct.classList.remove("is-on"); return; }
+  if (!animate) jnavAct.classList.add("no-anim");
+  const cx = jnav.getBoundingClientRect().left;
+  const r = btn.getBoundingClientRect();
+  jnavAct.style.setProperty("--jn-ax", (r.left - cx).toFixed(1) + "px");
+  jnavAct.style.width = r.width.toFixed(1) + "px";
+  jnavAct.classList.add("is-on");
+  if (!animate) {
+    void jnavAct.offsetWidth;            // 强制 reflow：无过渡归位先生效
+    jnavAct.classList.remove("no-anim"); // 再还给弹性，下次点击才有滑移
+  }
+}
+jnavMoveActive(false);
+/* 字体加载、断点切换都会改变选项宽度 —— 尺寸变化时无动画重定位 */
+new ResizeObserver(() => jnavMoveActive(false)).observe(jnav);
+
+if (hoverCapable) {
+  const moveTo = (btn) => {
+    const cx = jnav.getBoundingClientRect().left;
+    const r = btn.getBoundingClientRect();
+    jnavInd.style.setProperty("--jn-x", (r.left - cx).toFixed(1) + "px");
+    jnavInd.style.width = r.width.toFixed(1) + "px";
+    jnavInd.classList.add("is-on");
+  };
+  jnav.querySelectorAll(".jelly-nav-item").forEach((btn) => {
+    btn.addEventListener("mouseenter", () => moveTo(btn));
+    btn.addEventListener("focus", () => moveTo(btn));   // 键盘用户同样跟随
+  });
+  // 只淡出、不归零：下次进入从上次停留处滑过去，避免「跳回最左再滑出来」
+  jnav.addEventListener("mouseleave", () => jnavInd.classList.remove("is-on"));
+}
+
+/* 点击切换选中：不门控 hover —— 选中态是状态，触屏也要让胶囊滑过去 */
+jnav.querySelectorAll(".jelly-nav-item").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    jnav.querySelectorAll(".jelly-nav-item").forEach((b) => {
+      b.classList.remove("is-active");
+      b.setAttribute("aria-selected", "false");
+    });
+    btn.classList.add("is-active");
+    btn.setAttribute("aria-selected", "true");
+    jnavMoveActive(true);
+  });
+});
+
+/* ========== 果冻形变：按钮 ⇄ 弹窗（等价 JellyMorph.tsx） ==========
+   三个时机必须解耦：双 rAF 起跑 / 240ms 溶皮 / 480ms 点亮内容 + 毛玻璃淡入。 */
+const FAB_CENTER_OFFSET = 52;   // 1.5rem 边距 + 1.75rem 半径，改 .jelly-fab 尺寸要同步改
+const SKIN_DISSOLVE_MS = 240;
+const FORM_LIT_MS = 480;
+/* 回缩动画实际 380ms（transform 0.38s，opacity 0.16s+0.22s 延迟），只留 40ms 余量。
+   曾经写 560ms：回缩结束后还空等 180ms 按钮才回来，实测被用户感知为「停顿1秒」 */
+const CLOSE_DONE_MS = 420;
+
+const jmFab = document.getElementById("jmFab");
+const jmPanel = document.getElementById("jmPanel");
+const jmSkin = document.getElementById("jmSkin");
+const jmForm = document.getElementById("jmForm");
+const jmOverlay = document.getElementById("jmOverlay");
+const jmLayer = document.getElementById("jmLayer");
+let jmOpen = false, jmTimers = [], prevOverflow = "";
+const jmLater = (fn, ms) => jmTimers.push(setTimeout(fn, ms));
+const jmClearTimers = () => { jmTimers.forEach(clearTimeout); jmTimers = []; };
+
+function jmDoOpen() {
+  if (jmOpen) return;
+  jmClearTimers();
+  jmOpen = true;
+  // 飞行向量：视口中心 → 按钮中心。打开瞬间采样（视口尺寸可能变过）
+  jmPanel.style.setProperty("--jm-x", (innerWidth / 2 - FAB_CENTER_OFFSET) + "px");
+  jmPanel.style.setProperty("--jm-y", (innerHeight / 2 - FAB_CENTER_OFFSET) + "px");
+  prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  jmLayer.style.zIndex = "50";
+  jmPanel.hidden = false;
+  jmPanel.classList.remove("is-closing", "is-flying", "is-glass");
+  jmSkin.classList.remove("is-dissolved");
+  jmForm.classList.remove("is-lit");
+  jmFab.classList.remove("is-back");
+  jmFab.classList.add("is-gone");          // 瞬撤，不淡出（否则「两团绿」连闪）
+
+  // 双 rAF：等面板以缩小态挂载并完成首帧光栅化后再起跑
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!jmOpen) return;
+    jmPanel.classList.add("is-flying");
+    jmOverlay.classList.add("is-open");
+  }));
+  jmLater(() => jmOpen && jmSkin.classList.add("is-dissolved"), SKIN_DISSOLVE_MS);
+  // 点亮内容与毛玻璃淡入同帧：毛玻璃靠独立内层 opacity 淡入（本身不能过渡），
+  // 且必须等 scale 贴近 1 —— 缩放途中 backdrop-filter 逐帧重采样会卡顿
+  jmLater(() => {
+    if (!jmOpen) return;
+    jmPanel.classList.add("is-glass");
+    jmForm.classList.add("is-lit");
+  }, FORM_LIT_MS);
+}
+
+function jmDoClose() {
+  if (!jmOpen) return;
+  jmOpen = false;
+  jmClearTimers();
+  // 先收内容：果冻皮回绿时是半透明的，内容若仍可见会随缩放扭曲透出
+  jmForm.classList.remove("is-lit");
+  // 毛玻璃瞬间摘掉（不过渡）：回缩途中带着 backdrop-filter 缩放会逐帧重采样，
+  // abrupt 的一帧由同步回绿的果冻皮盖住
+  jmPanel.classList.remove("is-glass");
+  jmSkin.classList.remove("is-dissolved");
+  jmPanel.classList.remove("is-flying");
+  jmPanel.classList.add("is-closing");
+  jmOverlay.classList.remove("is-open");   // 同时交回指针（见 CSS 第 11 节的注释）
+  // 滚动解锁推迟到回缩完成：立即解锁会触发整页 reflow 吃掉退出动画
+  jmLater(() => {
+    jmPanel.hidden = true;
+    jmPanel.classList.remove("is-closing");
+    // 回缩到位与按钮重现同帧衔接 + 小弹一下：消掉「收完了按钮还没回来」的空窗
+    jmFab.classList.remove("is-gone");
+    jmFab.classList.add("is-back");
+    jmFab.addEventListener("animationend", function once() {
+      jmFab.removeEventListener("animationend", once);
+      jmFab.classList.remove("is-back");
+    });
+    jmLayer.style.zIndex = "999";
+    document.body.style.overflow = prevOverflow;
+  }, CLOSE_DONE_MS);
+}
+
+jmFab.addEventListener("click", jmDoOpen);
+jmOverlay.addEventListener("click", jmDoClose);
+document.getElementById("jmClose").addEventListener("click", jmDoClose);
+addEventListener("keydown", (e) => { if (e.key === "Escape") jmDoClose(); });
+
+/* ========== 下拉进/退场重播（演示 data-state 驱动的第三套入场机制） ========== */
+const dd = document.getElementById("dd");
+document.getElementById("ddToggle").addEventListener("click", () => {
+  dd.dataset.state = "closed";
+  // 退场动画播完才「重新打开」-- 真实项目里这里是延迟卸载组件
+  dd.addEventListener("animationend", function once() {
+    dd.removeEventListener("animationend", once);
+    dd.dataset.state = "open";
+  });
+});
+
+/* ========== 颜文字 LED 点阵（等价 MoodFace.tsx + mood-faces.ts） ==========
+   demo 不能 import，所以零件库在这里是一份纯 JS 拷贝（与 mood-faces.ts 保持同步改）。
+   React 版把「量宽度算灯珠尺寸」放 useEffect + ResizeObserver；vanilla 版同理，
+   只是一个共享 RO 观察每个 .led-face-fit。坏灯珠用确定性哈希挑（不用 Math.random，
+   与 React 版 SSR 安全的理由一致） */
+const LED_ROWS = 9;
+const LED_GAP = 1;
+const LED_PARTS = {
+  LP: ["00","01","10","10","10","10","10","01","00"],
+  RP: ["00","10","01","01","01","01","01","10","00"],
+  SLP: ["00","00","00","01","10","10","01","00","00"],
+  SRP: ["00","00","00","10","01","01","10","00","00"],
+  BLUSH3: ["000000","000000","000000","101010","101010","010101","010101","000000","000000"],
+  BLUSH2: ["0000","0000","0000","1010","1010","0101","0101","0000","0000"],
+  ACUTE: ["00","00","01","10","00","00","00","00","00"],
+  GRAVE: ["00","00","10","01","00","00","00","00","00"],
+  MW: ["00000","00000","00000","00000","00000","10101","01010","00000","00000"],
+  OMG: ["00000","00000","00000","00000","00000","10101","01011","00000","00000"],
+  BOWTIE: ["000","000","000","101","010","101","000","000","000"],
+  CHEEKO: ["000","000","000","010","111","010","000","000","000"],
+  GT: ["000","000","110","001","110","000","000","000","000"],
+  LT: ["000","000","011","100","011","000","000","000","000"],
+  SMILE: ["00000","00000","00000","00000","00000","10001","01110","00000","00000"],
+  KUTEN: ["000","000","000","000","000","010","101","010","000"],
+  SPK: ["00000","00100","00100","11011","00100","00100","00000","00000","00000"],
+  HEART: ["00000","01010","11111","11111","01110","00100","00000","00000","00000"],
+  SLASH: ["000","000","001","010","010","100","000","000","000"],
+  BSLASH: ["000","000","100","010","010","001","000","000","000"],
+  STAR: ["000","000","000","101","010","101","000","000","000"],
+  ANGER: ["1010","0100","1010","0000","0000","0000","0000","0000","0000"],
+  BROWL: ["000","000","110","001","000","000","000","000","000"],
+  BROWR: ["000","000","011","100","000","000","000","000","000"],
+  MANGRY: ["000","000","000","000","000","111","010","000","000"],
+  TEAR: ["000","000","010","111","010","010","000","000","000"],
+  ELL: ["00000","00000","00000","00000","00000","00000","10101","00000","00000"],
+  DEG: ["000","000","010","101","010","000","000","000","000"],
+  BOX: ["0000","0000","0000","0000","1111","1001","1111","0000","0000"],
+  SWEAT: ["000","010","011","010","000","000","000","000","000"],
+  DOTC: ["000","000","000","000","000","010","101","000","000"],
+  HOOK: ["000","000","010","010","010","011","000","000","000"],
+  USC: ["000","000","000","000","000","000","111","000","000"],
+  TE: ["00000","11111","00000","11110","00010","00100","01000","00000","00000"],
+  RE: ["0000","0100","0100","0100","0010","0011","0001","0000","0000"],
+  TSU: ["000","000","000","101","010","010","000","000","000"],
+};
+function ledCompose(keys) {
+  const rows = [];
+  for (let r = 0; r < LED_ROWS; r++) rows.push(keys.map((k) => LED_PARTS[k][r]).join("0"));
+  return rows;
+}
+/* [点阵, 标签, 发光色]：颜色演示 --led-color 的注入能力（原站主播舞台统一用害羞粉） */
+const LED_META = [
+  [ledCompose(["LP","BLUSH3","ACUTE","MW","GRAVE","BLUSH3","RP","TE","RE","TSU"]), "平静 · NEUTRAL", "#67e8f9"],
+  [ledCompose(["LP","BOWTIE","CHEEKO","GT","SMILE","LT","CHEEKO","RP","KUTEN","SPK","HEART"]), "开心 · HAPPY", "#a3e635"],
+  [ledCompose(["LP","SLASH","OMG","BSLASH","STAR","RP"]), "害羞 · SHY", "#f9a8d4"],
+  [ledCompose(["LP","ANGER","BROWL","MANGRY","BROWR","RP"]), "吃醋 · JEALOUS", "#f87171"],
+  [ledCompose(["LP","ACUTE","TEAR","OMG","TEAR","GRAVE","RP"]), "担心 · WORRIED", "#fbbf24"],
+  [ledCompose(["SLP","SLP","LP","BLUSH2","ACUTE","MW","GRAVE","BLUSH2","RP","SRP","SRP","TE","RE","TE","RE","ELL","HEART"]), "贴贴 · CUDDLE", "#93c5fd"],
+  [ledCompose(["LP","DEG","BOX","DEG","SWEAT","RP"]), "惊讶 · SURPRISED", "#fde047"],
+  [ledCompose(["LP","DOTC","HOOK","USC","HOOK","DOTC","RP"]), "困倦 · SLEEPY", "#a78bfa"],
+];
+const ledRow = document.getElementById("ledRow");
+const ledRo = new ResizeObserver((entries) => {
+  for (const e of entries) {
+    const fit = e.target, grid = fit.firstElementChild, cols = +fit.dataset.cols;
+    const d = Math.max(2, Math.min(6, (fit.clientWidth - (cols - 1) * LED_GAP) / cols));
+    grid.style.gridTemplateColumns = "repeat(" + cols + ", " + d + "px)";
+    grid.style.gridTemplateRows = "repeat(" + LED_ROWS + ", " + d + "px)";
+  }
+});
+LED_META.forEach(([rows, label, color]) => {
+  const cell = document.createElement("div");
+  cell.className = "led-cell panel-glass";
+  const face = document.createElement("div");
+  face.className = "led-face";
+  face.style.setProperty("--led-color", color);
+  const fit = document.createElement("div");
+  fit.className = "led-face-fit";
+  const grid = document.createElement("div");
+  grid.className = "led-face-grid";
+  rows.forEach((line, r) => {
+    line.split("").forEach((ch, c) => {
+      const dot = document.createElement("span");
+      const on = ch === "1";
+      const seed = (r * 31 + c * 17) & 0xff;
+      const flick = on && seed % 5 === 0;
+      dot.className = "led-face-dot" + (on ? " on" : "") + (flick ? " flick" : "");
+      if (flick) {
+        dot.style.animationDelay = ((seed % 50) / 10) + "s";
+        dot.style.animationDuration = (2.4 + (seed % 7) * 0.3) + "s";
+      }
+      grid.appendChild(dot);
+    });
+  });
+  const tag = document.createElement("span");
+  tag.className = "led-face-label";
+  tag.textContent = label;
+  fit.appendChild(grid);
+  fit.dataset.cols = rows[0].length;
+  face.appendChild(fit);
+  face.appendChild(tag);
+  cell.appendChild(face);
+  ledRow.appendChild(cell);
+  ledRo.observe(fit);
+});
+
+/* ========== 影院海报墙（等价 CinemaWall.tsx） ==========
+   桌面 7 列 / 窄屏 4 列；奇偶列反方向、每列速度不同；每列内容复制两份做无缝循环。
+   鼠标悬停某列停滚、悬停某卡聚光灯（其余降亮）—— 全部由 CSS 完成，JS 只负责建列。
+   卡片 3:4、列宽 ≈ 舞台宽/列数，所以「一份」内容必须够高才铺得满：每列至少要
+   3 × 列数 × 舞台高 / (4 × 舞台宽) 张。这里 7 列 × 4 张 = 28 张，留足余量。 */
+const CIN_TITLES = [
+  "夜の劇場", "霓虹深处", "胶片挽歌", "午夜场", "试写会", "荧惑", "灯下黑",
+  "次回予告", "雨中招牌", "青き夜", "尾场观众", "散场之后", "片尾曲", "银尘",
+  "放映中", "空席あり", "最終上映", "褪色海报", "暗房", "候场厅", "逆光",
+  "白噪音", "第二卷", "残响", "夜行列车", "闭馆前", "旧胶卷", "無音上映",
+];
+const cinemaStage = document.getElementById("cinemaStage");
+const CIN_COLS = window.innerWidth < 640 ? 4 : 7;
+const CIN_DURATIONS = [55, 62, 50, 68, 58, 64, 52];
+const cinBuckets = Array.from({ length: CIN_COLS }, () => []);
+CIN_TITLES.forEach((t, i) => cinBuckets[i % CIN_COLS].push(t));
+
+// 旋转层与列容器只建一个：.cinema-tilted 是 absolute inset:0，每列建一个会叠成
+// 七层，只剩最上面那层可见，且它那一列被 flex:1 撑成满宽 = 屏幕上只有一张巨图
+const cinTilted = document.createElement("div");
+cinTilted.className = "cinema-tilted";
+const cinCols = document.createElement("div");
+cinCols.className = "cinema-cols";
+
+cinBuckets.forEach((col, colIdx) => {
+  const goingDown = colIdx % 2 === 0;   // 偶数列向下滚、奇数列向上滚
+  const colEl = document.createElement("div");
+  colEl.className = "cinema-col";
+  const track = document.createElement("div");
+  track.className = "cinema-col-track " + (goingDown ? "scroll-down" : "scroll-up");
+  track.style.animationDuration = CIN_DURATIONS[colIdx % CIN_DURATIONS.length] + "s";
+
+  // 两份相同内容首尾相接，translateY -50% 时无缝接回起点
+  [...col, ...col].forEach((title, i) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "cinema-card";
+    card.setAttribute("aria-label", title);
+    const hue = HUES[(colIdx * 3 + i) % HUES.length];
+    card.innerHTML =
+      '<img alt="" src="' + cover(hue, colIdx * 3 + i + 1) + '" draggable="false">' +
+      '<div class="cinema-card-caption"><h4>' + title + '</h4><p>#' +
+      String(colIdx + 1) + " 列 · " + (goingDown ? "下行" : "上行") + '</p></div>';
+    track.appendChild(card);
+  });
+
+  colEl.appendChild(track);
+  cinCols.appendChild(colEl);
+});
+
+cinTilted.appendChild(cinCols);
+cinemaStage.appendChild(cinTilted);
+</script>
+</body>
+</html>

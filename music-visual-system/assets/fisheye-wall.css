@@ -1,0 +1,195 @@
+/* ==========================================================================
+ * 鱼眼卡片墙 · 样式（配套 FisheyeWall.tsx / demo.html）
+ *
+ * 结构（层级不可省）：
+ *   .fw-viewport          舞台：perspective 写在 inline style 上（要按视口调）
+ *     ├─ .fw-parallax     背景层，随指针轻微反向位移（transform 由 JS 直写）
+ *     └─ .fw-stage        3D 上下文：transform-style: preserve-3d
+ *         └─ .fw-card ×N  卡片：每帧的 transform / opacity 由 JS 直写
+ *
+ * ⚠️ 卡片上绝不能写 filter：元素自身的 filter 会废掉它自己的 backdrop-filter，
+ *    毛玻璃直接失效（现象是只有正中心那张糊 —— 因为中心卡的模糊量恰好是 0）。
+ * ⚠️ 要整层隐藏卡片只能用 visibility，不能用 opacity：opacity<1 是 CSS grouping
+ *    property，会把 transform-style 强制扁平化，透视投影塌陷 = 整面墙跳位。
+ * ========================================================================== */
+
+.fw-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  /* 拖拽墙面时不要选中文字 / 不要触发浏览器自身的滚动手势 */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  cursor: grab;
+}
+.fw-viewport:active {
+  cursor: grabbing;
+}
+
+/* 背景层比视口大一圈：视差位移最多 24px，出血 40px 保证边缘永远不露底 */
+.fw-parallax {
+  position: absolute;
+  inset: -40px;
+  pointer-events: none;
+}
+.fw-parallax > * {
+  position: absolute;
+  inset: 0;
+}
+
+/* 四周暗角：把注意力压回中心那批「放大」的卡片 */
+.fw-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(70% 60% at 50% 50%, transparent 36%, rgba(0, 0, 0, 0.62) 100%);
+}
+
+.fw-stage {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  /* 这张 z=0 的平面会挡住 z<0 的卡片，必须放行命中测试；卡片自己再打开 */
+  pointer-events: none;
+}
+
+.fw-card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* 初始透明：首帧 rAF 写入真实 opacity 之前，不要在原点闪一下 */
+  opacity: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 20px;
+  cursor: pointer;
+  pointer-events: auto;
+  will-change: transform;
+  /* 兜底初值，避免首帧没被 JS 写到时用默认 2D 布局 */
+  transform: translate3d(0, 0, 0);
+  /* 发丝描边用 box-shadow 而不是 border：不占布局、不影响 border-radius 裁切 */
+  box-shadow:
+    0 18px 44px -16px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+/* —— 两档毛玻璃 ——
+   卡片本体是「几乎无色」的半透明磨砂板，糊的是它身后那张**清晰**的背景图。
+   背景本身不要预先模糊，否则玻璃就没有可糊的细节了。 */
+.fw-glass {
+  background: rgba(18, 20, 26, 0.22);
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+}
+/* 降级档（手机 / 弱 GPU / prefers-reduced-motion）。
+   注意这仍是 backdrop-filter、仍每帧实时采样背景，省的只是高斯核那部分；
+   「复制背景 + 合成」的大头还在。真机仍卡就换成下面的 .fw-glass-solid。 */
+.fw-glass-lite {
+  background: rgba(18, 20, 26, 0.26);
+  backdrop-filter: blur(6px) saturate(1.4);
+  -webkit-backdrop-filter: blur(6px) saturate(1.4);
+}
+/* 数量级省法：彻底不采样背景，纯色底 —— 观感损失明显，但这是最后一张牌 */
+.fw-glass-solid {
+  background: rgba(18, 20, 26, 0.82);
+}
+
+/* 安卓：投影区在拖动时要被反复过绘，模糊半径越大越贵 —— 换一档更小的 */
+.fw-card.is-android {
+  box-shadow:
+    0 8px 22px -10px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+/* lite 档去掉顶边内高光（少一层合成） */
+.fw-card.is-lite {
+  box-shadow:
+    0 8px 22px -10px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+
+/* —— 卡片内容（示例排版，按需替换）—— */
+.fw-card-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.fw-card-cover {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.5);
+}
+.fw-card-cover img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.fw-card-title,
+.fw-card-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  line-height: 1.15;
+  /* 压住任意封面底色，保证白字永远可读 */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+.fw-card-title {
+  font-weight: 600;
+  color: #fff;
+}
+.fw-card-sub {
+  margin-top: 1px;
+  color: rgba(255, 255, 255, 0.75);
+}
+.fw-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(255, 255, 255, 0.85);
+}
+.fw-card-row button {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+/* 闲置态主键：半透白圆 + 白三角 */
+.fw-card-play {
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  transition: background-color 0.2s ease, transform 0.15s ease;
+}
+.fw-card-play:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+.fw-card-play:active {
+  transform: scale(0.95);
+}
+
+/* 降动效：墙本身是交互驱动的（用户不拖就不动），这里只关掉装饰性过渡。
+   鱼眼/3D 是这套视觉的身份，不因 reduced-motion 取消 —— 但调用方应把
+   lite=true 传进来关掉指针视差。 */
+@media (prefers-reduced-motion: reduce) {
+  .fw-card-play {
+    transition: none;
+  }
+}

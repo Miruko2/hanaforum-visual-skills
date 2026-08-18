@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fisheye-wall · 3D 鱼眼卡片墙演示</title>
+<link rel="stylesheet" href="./fisheye-wall.css">
+<style>
+  /* ===== 仅演示页自用，不属于套件 ===== */
+  html, body { margin: 0; height: 100%; background: #000; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #wall { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; top: 14px; left: 14px; z-index: 20; max-width: 340px;
+    padding: 14px 16px; border-radius: 16px; color: rgba(255,255,255,0.72);
+    font-size: 12px; line-height: 1.75;
+    background: rgba(18,20,26,0.42);
+    backdrop-filter: blur(18px) saturate(1.5);
+    -webkit-backdrop-filter: blur(18px) saturate(1.5);
+    box-shadow: 0 18px 44px -16px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.16);
+  }
+  .hint h1 { margin: 0 0 6px; font-size: 13px; letter-spacing: .18em; text-transform: uppercase; color: rgba(255,255,255,0.92); }
+  .hint b { color: rgba(255,255,255,0.95); font-weight: 600; }
+  .hint ol { margin: 6px 0 0; padding-left: 1.1em; }
+  .hint code { font-family: ui-monospace, Consolas, monospace; color: #a5d8ff; }
+  .toggles { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .toggles button {
+    padding: 5px 10px; border-radius: 999px; cursor: pointer; font-size: 11px;
+    color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.18);
+  }
+  .toggles button[aria-pressed="true"] { background: rgba(255,255,255,0.32); color: #fff; }
+  #fps {
+    position: fixed; top: 14px; right: 14px; z-index: 20; padding: 6px 10px; border-radius: 10px;
+    font: 12px/1.4 ui-monospace, Consolas, monospace; color: #d7ffd7;
+    background: rgba(0,0,0,0.45); box-shadow: 0 0 0 1px rgba(255,255,255,0.14);
+  }
+</style>
+</head>
+<body>
+
+<div id="wall" class="fw-viewport" style="perspective:1450px; perspective-origin:50% 50%"></div>
+
+<div class="hint">
+  <h1>fisheye wall</h1>
+  拖动 / 滚轮平移墙面，松手有惯性。验证点：
+  <ol>
+    <li>屏幕中心的卡片<b>向观众隆起放大</b>，四周的卡片<b>转过去朝向中心</b>并后退；</li>
+    <li>放大是<b>连间距一起放大</b>的（局部放大镜），邻卡不会叠在一起；</li>
+    <li>墙面<b>四方向无限循环</b>，看不到接缝；</li>
+    <li>卡片是<b>真毛玻璃</b>（糊背景那张清晰底图），不是半透明色块；</li>
+    <li>静止时右上角 <code>paint</code> 掉到 0 —— 静止停渲生效。</li>
+  </ol>
+  <div class="toggles">
+    <button id="btnGlass" aria-pressed="false">lite 玻璃</button>
+    <button id="btnParallax" aria-pressed="true">背景视差</button>
+    <button id="btnHide" aria-pressed="false">整层隐藏</button>
+  </div>
+</div>
+<div id="fps">—</div>
+
+<script>
+/* ============================================================
+ * 1. 纯数学三件套（等价 fisheye-wall.ts）
+ * ============================================================ */
+function packItems(items, cols, unitWidth, gap, ratio) {
+  const colHeights = new Array(cols).fill(0);
+  const cards = [];
+  for (const item of items) {
+    const span = item.span === 2 && cols >= 2 ? 2 : 1;
+    if (span === 1) {
+      let bestCol = 0, bestH = colHeights[0];
+      for (let c = 1; c < cols; c++) if (colHeights[c] < bestH) { bestH = colHeights[c]; bestCol = c; }
+      const width = unitWidth - gap, height = Math.round(width * ratio);
+      cards.push({ item, span: 1, worldX: bestCol * unitWidth, worldY: bestH, width, height });
+      colHeights[bestCol] = bestH + height + gap;
+    } else {
+      let bestStart = 0, bestMax = Math.max(colHeights[0], colHeights[1]);
+      for (let c = 1; c < cols - 1; c++) {
+        const m = Math.max(colHeights[c], colHeights[c + 1]);
+        if (m < bestMax) { bestMax = m; bestStart = c; }
+      }
+      const width = unitWidth * 2 - gap, height = Math.round(width * ratio);
+      cards.push({ item, span: 2, worldX: bestStart * unitWidth, worldY: bestMax, width, height });
+      const newH = bestMax + height + gap;
+      colHeights[bestStart] = newH;
+      colHeights[bestStart + 1] = newH;
+    }
+  }
+  // 所有列共用同一个 tileH，整块 tile 作为一个单位循环 —— 无缝的前提
+  return { cards, cols, unitWidth, gap, tileW: cols * unitWidth, tileH: Math.max(1, ...colHeights) };
+}
+
+function computeInstances(pack, panX, panY, viewW, viewH, margin) {
+  margin = margin === undefined ? 80 : margin;
+  const out = [];
+  for (const card of pack.cards) {
+    const baseX = card.worldX + panX;
+    const kxMin = Math.floor((-baseX - card.width - margin) / pack.tileW);
+    const kxMax = Math.floor((viewW - baseX + margin) / pack.tileW);
+    const baseY = card.worldY + panY;
+    const kyMin = Math.floor((-baseY - card.height - margin) / pack.tileH);
+    const kyMax = Math.floor((viewH - baseY + margin) / pack.tileH);
+    for (let kx = kxMin; kx <= kxMax; kx++)
+      for (let ky = kyMin; ky <= kyMax; ky++)
+        out.push({
+          key: card.item.id + "_" + kx + "_" + ky,
+          card,
+          worldX: card.worldX + kx * pack.tileW,
+          worldY: card.worldY + ky * pack.tileH,
+        });
+  }
+  return out;
+}
+
+const TILT_COEF_DEG = 44, MAX_TILT_DEG = 46;
+function fisheye(cx, cy, focusX, focusY, radius) {
+  const dx = cx - focusX, dy = cy - focusY;
+  const d = Math.hypot(dx, dy);
+  // 高斯衰减（指数里带平方）：焦点附近压平，中央「近乎等大」的区域更宽
+  const k = Math.exp(-Math.pow(d / radius, 2));
+  // 透明度单独用放宽 2.5 倍的半径，否则屏幕大部分区域会灰掉
+  const kO = Math.exp(-Math.pow(d / (radius * 2.5), 2));
+  const clamp = (v) => Math.max(-MAX_TILT_DEG, Math.min(MAX_TILT_DEG, v));
+  return {
+    scale: 0.45 + k * 0.55,        // 上限锁 1.0：「变大」交给正向 z 的透视放大
+    z: -330 + k * 580,             // 中心 +250 向观众隆起、边缘 -330 后退
+    rotX: clamp((dy / radius) * TILT_COEF_DEG),
+    rotY: clamp(-(dx / radius) * TILT_COEF_DEG),
+    opacity: 0.35 + kO * 0.65,
+  };
+}
+
+/* ============================================================
+ * 2. 假数据：封面用内联 SVG，全页不联网
+ * ============================================================ */
+const TITLES = [
+  ["夜航","kaori"],["盐粒","みお"],["回声试验","nyamura"],["蓝调午睡","tsuki"],
+  ["第三车厢","あお"],["雨的备份","hoshi"],["糖分不足","yuki"],["静电","rin"],
+  ["黄昏折返","sora"],["空调房","mei"],["旧磁带","kanon"],["月台广播","haru"],
+  ["低烧","nao"],["罐头笑声","ichi"],["柠檬海","suzu"],["失眠电台","ao"],
+  ["纸飞机","kumo"],["晚点十分钟","yui"],["白噪","mizu"],["冷萃","saki"],
+];
+const HUES = [200, 330, 96, 262, 28, 174, 312, 48];
+function cover(hue, i) {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'>
+    <defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+      <stop offset='0%' stop-color='hsl(${hue} 72% 62%)'/>
+      <stop offset='100%' stop-color='hsl(${hue + 40} 58% 24%)'/>
+    </linearGradient></defs>
+    <rect width='300' height='300' fill='url(#g)'/>
+    <circle cx='150' cy='150' r='84' fill='none' stroke='rgba(255,255,255,0.55)' stroke-width='6'/>
+    <circle cx='150' cy='150' r='16' fill='rgba(255,255,255,0.75)'/>
+    <text x='150' y='268' font-family='monospace' font-size='30' font-weight='bold'
+          text-anchor='middle' fill='rgba(255,255,255,0.75)'>${i}</text>
+  </svg>`;
+  return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+}
+// 背景底图：必须**清晰有细节**，玻璃才有东西可糊 —— 预先糊过的背景 = 玻璃白做。
+// 细密的扫描线是最好的「模糊显影剂」：糊一下就化没了，玻璃有没有生效一眼看得出。
+// 用大块渐变而非平铺图，避免瓦片接缝在墙后连成可见的格子线。
+const BACKDROP = [
+  "radial-gradient(42% 42% at 18% 22%, hsl(200 62% 44% / .55), transparent 70%)",
+  "radial-gradient(38% 46% at 78% 16%, hsl(330 60% 44% / .50), transparent 70%)",
+  "radial-gradient(46% 42% at 28% 80%, hsl(96 52% 40% / .45), transparent 70%)",
+  "radial-gradient(40% 46% at 84% 74%, hsl(262 60% 46% / .50), transparent 70%)",
+  "radial-gradient(32% 32% at 54% 46%, hsl(174 58% 42% / .40), transparent 70%)",
+  "repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 5px)",
+  "#0b0f1c",
+].join(",");
+
+const ITEMS = TITLES.map((t, i) => ({
+  id: "t" + i, span: i % 7 === 3 ? 2 : 1, title: t[0], artist: t[1], cover: cover(HUES[i % HUES.length], i + 1),
+}));
+
+/* ============================================================
+ * 3. 装配 DOM
+ * ============================================================ */
+const viewport = document.getElementById("wall");
+
+const parallax = document.createElement("div");
+parallax.className = "fw-parallax";
+parallax.setAttribute("aria-hidden", "true");
+const bgTile = document.createElement("div");
+bgTile.style.background = BACKDROP;
+const bgTint = document.createElement("div");
+// 压暗一档，让卡片从背景里跳出来（真站上这层是暗角 + 封面氛围光）
+bgTint.style.background =
+  "radial-gradient(120% 90% at 50% 40%, rgba(6,9,18,0.30), rgba(0,0,0,0.74) 78%)";
+parallax.append(bgTile, bgTint);
+viewport.appendChild(parallax);
+
+const vignette = document.createElement("div");
+vignette.className = "fw-vignette";
+viewport.appendChild(vignette);
+
+const stage = document.createElement("div");
+stage.className = "fw-stage";
+viewport.appendChild(stage);
+
+let liteGlass = false;
+const nodes = new Map();     // key -> element
+function cardEl(inst) {
+  const { item, width, height } = inst.card;
+  // 一切内部尺寸由卡片宽度派生（clamp 上下限），不用断点
+  const pad = Math.max(8, Math.min(14, Math.round(width * 0.055)));
+  const el = document.createElement("div");
+  el.className = "fw-card " + (liteGlass ? "fw-glass-lite is-lite" : "fw-glass");
+  el.style.width = width + "px";
+  el.style.height = height + "px";
+  el.innerHTML =
+    `<div class="fw-card-body" style="padding:${pad}px; gap:${pad - 2}px">` +
+      `<div class="fw-card-cover" style="border-radius:${Math.max(9, Math.min(14, pad + 2))}px">` +
+        `<img alt="" src="${item.cover}" draggable="false">` +
+      `</div>` +
+      `<div>` +
+        `<div class="fw-card-title" style="font-size:${Math.max(12, Math.min(16, Math.round(width * 0.092)))}px">${item.title}</div>` +
+        `<div class="fw-card-sub" style="font-size:${Math.max(10, Math.min(13, Math.round(width * 0.072)))}px">${item.artist}</div>` +
+      `</div>` +
+      `<div class="fw-card-row">` +
+        `<button aria-label="prev">◀◀</button>` +
+        `<button class="fw-card-play" aria-label="play" style="width:${Math.max(30, Math.min(44, Math.round(width * 0.2)))}px;height:${Math.max(30, Math.min(44, Math.round(width * 0.2)))}px">▶</button>` +
+        `<button aria-label="next">▶▶</button>` +
+        `<button aria-label="like">♡</button>` +
+      `</div>` +
+    `</div>`;
+  // 卡片内的按钮必须吞掉 pointerdown，否则按下就开始平移
+  el.querySelectorAll("button").forEach((b) => {
+    b.addEventListener("pointerdown", (e) => e.stopPropagation());
+    b.addEventListener("click", (e) => e.stopPropagation());
+  });
+  return el;
+}
+
+/* ============================================================
+ * 4. 交互 + rAF 循环（等价 FisheyeWall.tsx）
+ * ============================================================ */
+const COLS = 8, GAP = 6, RATIO = 1.3;
+const PARALLAX_AMOUNT = 24, PAN_LERP = 0.15, DRAG_INERTIA = 0.92;
+
+let viewW = 0, viewH = 0, pack = null;
+const panTarget = { x: 0, y: 0 }, pan = { x: 0, y: 0 }, panVel = { x: 0, y: 0 };
+const pointer = { x: 0, y: 0 };
+let drag = { active: false, id: null, lastX: 0, lastY: 0, lastT: 0 };
+let centered = false;
+let parallaxOn = true, hiddenLayer = false;
+
+function relayout() {
+  const r = viewport.getBoundingClientRect();
+  viewW = r.width; viewH = r.height;
+  pack = packItems(ITEMS, COLS, viewW < 768 ? 140 : 180, GAP, RATIO);
+  if (!centered && viewW && viewH) {
+    pan.x = panTarget.x = -pack.tileW / 2 + viewW / 2;
+    pan.y = panTarget.y = -pack.tileH / 2 + viewH / 2;
+    pointer.x = viewW / 2; pointer.y = viewH / 2;
+    centered = true;
+  }
+  // 换列宽后旧卡片尺寸全变了，清空重建。必须同时置 needRebuild ——
+  // 可见集的重算是「pan 动了才做」，静止时不给这个信号就永远不会把卡片补回来
+  nodes.forEach((n) => n.remove());
+  nodes.clear();
+  prevStyle.clear();
+  sig = "";
+  needRebuild = true;
+}
+const prevStyle = new Map();
+let sig = "";
+let needRebuild = true;
+
+new ResizeObserver(relayout).observe(viewport);
+relayout();
+
+// 按下瞬间把 target 钉到当前可见位置：否则滑行中的卡片会在 down 与 up 之间滑走，
+// 浏览器判定「按下与抬起不在同一元素」而吞掉 click
+viewport.addEventListener("pointerdown", (e) => {
+  panTarget.x = pan.x; panTarget.y = pan.y;
+  panVel.x = panVel.y = 0;
+  if (e.target.closest("button")) return;
+  if (e.button !== 0 && e.pointerType === "mouse") return;
+  drag = { active: true, id: e.pointerId, lastX: e.clientX, lastY: e.clientY, lastT: performance.now() };
+});
+viewport.addEventListener("wheel", (e) => {
+  panTarget.y -= e.deltaY;
+  panTarget.x -= e.deltaX;
+}, { passive: true });
+viewport.addEventListener("dragstart", (e) => e.preventDefault());
+
+// 拖动挂 window，不用 setPointerCapture（捕获会让卡片里的按钮点不动）
+window.addEventListener("pointermove", (e) => {
+  const r = viewport.getBoundingClientRect();
+  pointer.x = e.clientX - r.left; pointer.y = e.clientY - r.top;
+  if (drag.active && drag.id === e.pointerId) {
+    const dx = e.clientX - drag.lastX, dy = e.clientY - drag.lastY;
+    drag.lastX = e.clientX; drag.lastY = e.clientY;
+    panTarget.x += dx; panTarget.y += dy;
+    const now = performance.now(), dt = Math.max(1, now - drag.lastT);
+    panVel.x = dx / dt; panVel.y = dy / dt;
+    drag.lastT = now;
+  }
+});
+function endDrag(e) {
+  if (drag.active && drag.id === e.pointerId) {
+    drag.active = false; drag.id = null;
+    panVel.x *= 16; panVel.y *= 16;   // px/ms → px/帧
+  }
+}
+window.addEventListener("pointerup", endDrag);
+window.addEventListener("pointercancel", endDrag);
+
+let prevPanX = NaN, prevPanY = NaN, prevParallax = "", prevHidden = false;
+let cached = [], paintSeq = 0, lastPainted = -1;
+let paintedThisSec = 0, frames = 0, lastFpsAt = performance.now();
+
+function loop() {
+  // 惯性加在 target 上，lerp 仍会把它抹平、末尾自然收住
+  if (!drag.active && (Math.abs(panVel.x) > 0.05 || Math.abs(panVel.y) > 0.05)) {
+    panTarget.x += panVel.x; panTarget.y += panVel.y;
+    panVel.x *= DRAG_INERTIA; panVel.y *= DRAG_INERTIA;
+  }
+  pan.x += (panTarget.x - pan.x) * PAN_LERP;
+  pan.y += (panTarget.y - pan.y) * PAN_LERP;
+
+  if (parallaxOn) {
+    const nx = (pointer.x / viewW) * 2 - 1, ny = (pointer.y / viewH) * 2 - 1;
+    const ptf = `translate3d(${(-nx * PARALLAX_AMOUNT).toFixed(2)}px, ${(-ny * PARALLAX_AMOUNT).toFixed(2)}px, 0)`;
+    if (ptf !== prevParallax) { parallax.style.transform = ptf; prevParallax = ptf; }   // 脏检查
+  }
+
+  const panMoved = Math.abs(pan.x - prevPanX) > 0.01 || Math.abs(pan.y - prevPanY) > 0.01;
+
+  // pan 没动就不重算可见集
+  if (panMoved || needRebuild || cached.length === 0) {
+    needRebuild = false;
+    cached = computeInstances(pack, pan.x, pan.y, viewW, viewH);
+    const s = cached.map((i) => i.key).join("|");
+    if (s !== sig) {
+      sig = s;
+      paintSeq++;
+      const live = new Set(cached.map((i) => i.key));
+      nodes.forEach((node, k) => { if (!live.has(k)) { node.remove(); nodes.delete(k); prevStyle.delete(k); } });
+      for (const inst of cached) {
+        if (!nodes.has(inst.key)) {
+          const el = cardEl(inst);
+          nodes.set(inst.key, el);
+          stage.appendChild(el);
+        }
+      }
+    }
+  }
+
+  // 静止停渲：三者皆否 = 墙面没动，本帧整段跳过逐卡循环
+  if (panMoved || paintSeq !== lastPainted || hiddenLayer !== prevHidden) {
+    const focusX = viewW / 2, focusY = viewH / 2;
+    const radius = Math.min(viewW, viewH) * 0.42;
+    // 本帧是否把每张卡都写到了；没写全就不追平 lastPainted，下一帧继续补画
+    let allFound = true;
+    for (const inst of cached) {
+      const node = nodes.get(inst.key);
+      if (!node) { allFound = false; continue; }
+      const sx = inst.worldX + pan.x, sy = inst.worldY + pan.y;
+      const f = fisheye(sx + inst.card.width / 2, sy + inst.card.height / 2, focusX, focusY, radius);
+      // 顺序不能换：平移 → 绕中心旋转 → 缩放
+      const transform =
+        `translate3d(${sx.toFixed(2)}px, ${sy.toFixed(2)}px, ${f.z.toFixed(1)}px) ` +
+        `rotateX(${f.rotX.toFixed(2)}deg) rotateY(${f.rotY.toFixed(2)}deg) scale(${f.scale.toFixed(3)})`;
+      const opacity = f.opacity.toFixed(3);
+      const visibility = hiddenLayer ? "hidden" : "visible";
+      // 每条样式写入前脏检查
+      let p = prevStyle.get(inst.key);
+      if (!p) { p = { t: "", o: "", v: "" }; prevStyle.set(inst.key, p); }
+      if (p.t !== transform) { node.style.transform = transform; p.t = transform; paintedThisSec++; }
+      if (p.o !== opacity) { node.style.opacity = opacity; p.o = opacity; }
+      if (p.v !== visibility) { node.style.visibility = visibility; p.v = visibility; }
+    }
+    if (allFound) lastPainted = paintSeq;
+    prevHidden = hiddenLayer;
+  }
+
+  prevPanX = pan.x; prevPanY = pan.y;
+
+  frames++;
+  const now = performance.now();
+  if (now - lastFpsAt >= 500) {
+    const fps = Math.round((frames * 1000) / (now - lastFpsAt));
+    document.getElementById("fps").textContent =
+      `${fps} fps · cards ${cached.length} · paint ${paintedThisSec}`;
+    frames = 0; paintedThisSec = 0; lastFpsAt = now;
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ============================================================
+ * 5. 开关
+ * ============================================================ */
+const btnGlass = document.getElementById("btnGlass");
+btnGlass.addEventListener("click", () => {
+  liteGlass = !liteGlass;
+  btnGlass.setAttribute("aria-pressed", String(liteGlass));
+  nodes.forEach((n) => {
+    n.classList.toggle("fw-glass", !liteGlass);
+    n.classList.toggle("fw-glass-lite", liteGlass);
+    n.classList.toggle("is-lite", liteGlass);
+  });
+});
+const btnParallax = document.getElementById("btnParallax");
+btnParallax.addEventListener("click", () => {
+  parallaxOn = !parallaxOn;
+  btnParallax.setAttribute("aria-pressed", String(parallaxOn));
+  if (!parallaxOn) { parallax.style.transform = "translate3d(0,0,0)"; prevParallax = ""; }
+});
+const btnHide = document.getElementById("btnHide");
+btnHide.addEventListener("click", () => {
+  hiddenLayer = !hiddenLayer;
+  btnHide.setAttribute("aria-pressed", String(hiddenLayer));
+});
+</script>
+</body>
+</html>

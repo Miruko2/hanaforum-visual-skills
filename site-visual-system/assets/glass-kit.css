@@ -1,0 +1,2012 @@
+/* ==========================================================================
+ * glass-kit.css —— 暗底柠檬绿毛玻璃 + 高斯模糊动效 可移植套件
+ * 从 hanakos 站点 app/globals.css 抽取，数值与原站一致，可直接复制到新项目。
+ *
+ * 依赖：无（纯 CSS）。配套的 JS 驱动见 PostCardTilt.tsx / EnterOnView.tsx。
+ * 用法与检查清单见 ../references/10-portable-kit.md
+ *
+ * 【三条铁律，违反必炸】
+ * 1. filter 与 backdrop-filter 只能同元素共存，绝不能祖孙共存。
+ *    祖先只要有 filter（哪怕 blur(0)），子级 backdrop-filter 的背景采样立刻失效。
+ * 2. animation: ... forwards 会钉死元素 transform，同元素 :hover 的 transform 不生效。
+ *    所以位移挂 wrapper、旋转挂中间层、玻璃与入场挂本体（见第 6 节三层结构）。
+ * 3. backdrop-filter 永不进 transition / animation 列表。带它的元素 transition
+ *    必须显式列属性，不能写 all。
+ *
+ * 【前置条件】页面必须有一张固定底图或渐变背景（position:fixed; z-index:-1），
+ * 它是所有 backdrop-filter 的采样源。没有它玻璃就没东西可糊、退化成半透明色块。
+ * 第 2 节的 .bg-texture 已提供纯 CSS 版本，也可换成自己的图片。
+ * ========================================================================== */
+
+/* ==========================================================================
+ * 1. 设计令牌
+ * ========================================================================== */
+:root {
+  /* 主强调色：lime-500 / lime-300。换主题色改这两行即可，下方全部派生 */
+  --accent-color: 132, 204, 22;
+  --accent-glow: 163, 230, 53;
+
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 0, 0, 0;
+  --background-end-rgb: 20, 20, 20;
+
+  --glass-bg: rgba(255, 255, 255, 0.07);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-dark-bg: rgba(0, 0, 0, 0.5);
+  --glass-dark-border: rgba(132, 204, 22, 0.2);
+  --blur-strength: 20px;
+
+  --card-spacing: 12px;
+  --card-radius: 16px;
+  --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+
+  --animation-speed-slow: 0.5s;
+  --animation-speed-normal: 0.3s;
+  --animation-speed-fast: 0.15s;
+
+  /* 主力缓动：快出慢收、无过冲。位移/入场/流光都用它 */
+  --ease-main: cubic-bezier(0.23, 1, 0.32, 1);
+  /* 回弹：末段过冲。弹层弹入、头像放大用它 */
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* 轻快滑入：比主力更急 */
+  --ease-swift: cubic-bezier(0.22, 0.7, 0.18, 1);
+
+  /* app 化体验：去掉移动端点击的灰色高亮闪块 */
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --card-spacing: 8px;
+    --card-radius: 12px;
+  }
+}
+
+/* ==========================================================================
+ * 2. 页面基底
+ * ========================================================================== */
+body {
+  color: rgb(var(--foreground-rgb));
+  background-color: transparent;
+  /* dvh 回退：老内核用 100vh，支持 dvh 的按动态视口（移动端地址栏伸缩不跳动） */
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  position: relative;
+  /* 全站禁用文字选中（app/游戏化体验）。表单元素下面单独放行 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable="true"],
+[contenteditable=""] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 满视口高度工具类。⚠️ 不要用 Tailwind 的 min-h-[100dvh]：它只生成一条
+   min-height:100dvh，老内核（dvh 需 Chrome 108+）认不得就整条丢弃 → 高度塌成 0。
+   也不要 `min-h-screen min-h-[100dvh]` 并写：同元素两个类谁赢取决于样式表顺序。 */
+.min-h-viewport {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* 背景光晕：4 个强调色径向渐变叠一层近黑线性渐变。backdrop-filter 的采样源 */
+.bg-texture {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(132, 204, 22, 0.25), transparent 45%),
+    radial-gradient(circle at 80% 80%, rgba(163, 230, 53, 0.20), transparent 40%),
+    radial-gradient(circle at 60% 30%, rgba(101, 163, 13, 0.15), transparent 35%),
+    radial-gradient(circle at 30% 70%, rgba(132, 204, 22, 0.12), transparent 50%),
+    linear-gradient(135deg,
+      rgba(0, 0, 0, 1) 0%,
+      rgba(5, 10, 5, 0.95) 25%,
+      rgba(10, 15, 10, 0.9) 50%,
+      rgba(15, 20, 15, 0.95) 75%,
+      rgba(5, 5, 5, 1) 100%);
+}
+
+/* 网格纹理：60px 强调色网格，中心实四周虚 */
+.grid-texture {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.04;
+  background-image:
+    linear-gradient(rgba(163, 230, 53, 0.4) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(163, 230, 53, 0.4) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse at center, black 40%, transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 70%);
+}
+
+/* 飘浮粒子（JS 随机生成若干 .particle 子节点，各自给 animation-delay 错峰） */
+.particles {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.particle {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background-color: rgba(163, 230, 53, 0.5);
+  border-radius: 50%;
+  box-shadow: 0 0 15px 4px rgba(132, 204, 22, 0.3);
+  animation: float 20s infinite ease-in-out;
+  will-change: transform, opacity;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+/* ==========================================================================
+ * 3. 毛玻璃层级 —— 按场景选一档，不要新造
+ * 共同签名：box-shadow = 外投影 + `inset 0 1px 0` 顶部内高光 两段式
+ * ========================================================================== */
+
+/* 通用浅色玻璃 */
+.glass {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(var(--blur-strength)) saturate(120%);
+  -webkit-backdrop-filter: blur(var(--blur-strength)) saturate(120%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+/* 暗色玻璃，带强调色内高光 */
+.glass-dark {
+  background: rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(var(--blur-strength)) saturate(120%);
+  -webkit-backdrop-filter: blur(var(--blur-strength)) saturate(120%);
+  border: 1px solid rgba(132, 204, 22, 0.15);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(132, 204, 22, 0.1);
+}
+
+/* 内容卡本体（本套件的主角）。背景不透明度压到 0.38 是为了让 backdrop-filter
+   真有东西可以模糊；模糊放这一层而不是父层，避免影响子元素叠加上下文。
+   ⚠️ transition 显式列属性、排除 backdrop-filter（原站桌面端写的是 all，
+   这里统一改显式，更安全） */
+.glass-card {
+  background: rgba(25, 25, 35, 0.38);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 24px;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.3),
+    0 0 10px rgba(255, 255, 255, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.1) inset;
+  transition:
+    background-color 0.4s var(--ease-main),
+    border-color 0.4s var(--ease-main),
+    box-shadow 0.4s var(--ease-main);
+  overflow: hidden;
+  position: relative;
+}
+
+/* 面板玻璃（侧栏 / 设置卡 / 个人中心），自带重量级入场 */
+.panel-glass {
+  position: relative;
+  background: rgba(25, 25, 35, 0.42);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  animation: blurFadeIn 1.6s var(--ease-main) both;
+  overflow: hidden;
+}
+/* 顶部细高光：模拟玻璃上边缘反光。新增玻璃面板建议照抄这条 */
+.panel-glass::before,
+.glass-top-sheen::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+  pointer-events: none;
+}
+/* 相邻面板错落入场 */
+.panel-glass:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+/* 卡片底部文字区：四边描边不同（上强下弱），下圆角 */
+.frosted-glass {
+  position: relative;
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(24px) saturate(100%);
+  -webkit-backdrop-filter: blur(24px) saturate(100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 1px solid rgba(255, 255, 255, 0.04);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 0 0 20px 20px;
+  transition: border-color 0.3s ease, background-color 0.3s ease;
+}
+.frosted-glass::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 5%;
+  right: 5%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+  opacity: 0.3;
+}
+
+/* 导航栏 */
+.navbar-blur {
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+/* 智能隐藏导航（滚动向下藏、向上现） */
+.smart-navbar {
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transition: transform 0.3s var(--ease-main);
+}
+.smart-navbar.is-hidden { transform: translateY(-120%); }
+.smart-navbar.is-visible { transform: translateY(0); }
+.smart-navbar.is-scrolled { box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4); }
+
+/* 页面容器 */
+.page-container {
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(15px);
+  -webkit-backdrop-filter: blur(15px);
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding-top: 1rem;
+  padding-bottom: 5rem;
+}
+
+/* 模态面板 + 渐变描边环（mask-composite 做 1.5px 环） */
+.modal-content {
+  position: relative;
+  max-height: 85vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 24px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(25px) saturate(100%);
+  -webkit-backdrop-filter: blur(25px) saturate(100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 40px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  isolation: isolate;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.modal-content::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 24px;
+  padding: 1.5px;
+  background: linear-gradient(135deg,
+    rgba(255, 255, 255, 0.2),
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.05));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* 模态遮罩。⚠️ transition 只留 background-color，不动 backdrop-filter */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  backdrop-filter: blur(15px);
+  -webkit-backdrop-filter: blur(15px);
+  background: rgba(0, 0, 0, 0.4);
+  transform: translateZ(0);
+  animation: modalBackdropFadeIn 0.3s ease forwards;
+  transition: background-color 0.3s ease;
+}
+
+/* 滚动锁定：模态打开时给 body 加这个类 */
+body.modal-open {
+  overflow: hidden;
+  touch-action: none;
+  -webkit-overflow-scrolling: none;
+}
+
+/* ==========================================================================
+ * 4. 关键帧库 —— 加新动效前先看这里有没有能复用的
+ * ========================================================================== */
+
+/* 【核心】高斯模糊渐入。全套件最常复用的入场，也是「雾中浮现」的本体 */
+@keyframes blurFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+    filter: blur(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* 卡片入场：两段式雾中浮现（60% 处先补满透明度，收尾专注化开模糊） */
+@keyframes postEnterBlurReveal {
+  0% {
+    opacity: 0;
+    filter: blur(24px);
+    transform: translateY(20px);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+/* 卡片入场·廉价版：纯 transform+opacity，给低端安卓滚动重播用 */
+@keyframes postEnterCheapReveal {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 斜向流光扫过卡面（hover 触发一次） */
+@keyframes cardSheenSweep {
+  0%   { transform: translateX(-130%); opacity: 0; }
+  12%  { opacity: 1; }
+  100% { transform: translateX(130%); opacity: 0; }
+}
+
+/* 一次性高光扫掠（面板挂载后斜扫一次即停） */
+@keyframes sheenSweepOnce {
+  to { transform: translateX(130%); }
+}
+
+/* 细线柠檬光扫掠（输入行底边 / 加载指示，首尾都在屏外故可循环） */
+@keyframes lineSweep {
+  0%   { transform: translateX(-100%); opacity: 1; }
+  70%  { opacity: 1; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+
+/* 弹层弹入/退出（带过冲回弹） */
+@keyframes glassDropdownIn {
+  0%   { opacity: 0; transform: translateY(-8px) scale(0.92); }
+  60%  { opacity: 1; transform: translateY(2px) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes glassDropdownOut {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(-4px) scale(0.96); }
+}
+
+/* 卡片弹出（手机端菜单卡等，纯 CSS 替代 framer-motion spring —— 后者在
+   Android WebView 里主线程逐帧计算会掉帧发涩） */
+@keyframes cardPop {
+  0%   { opacity: 0; transform: scale(0.8) translateY(10px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* 行错峰滑入（列表/搜索结果，animationDelay 由内联 style 按 index 递延） */
+@keyframes rowSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* 逐行登场：模糊 + 透明 + 轻微上移一起化开 */
+@keyframes rowBlurReveal {
+  from { opacity: 0; filter: blur(6px); transform: translateY(8px); }
+  to   { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+/* 模态遮罩渐入（同时动 backdrop-filter 与底色；触屏改用 backdropFadeInCheap） */
+@keyframes modalBackdropFadeIn {
+  from { backdrop-filter: blur(0px); background: rgba(0, 0, 0, 0); }
+  to   { backdrop-filter: blur(15px); background: rgba(0, 0, 0, 0.4); }
+}
+@keyframes backdropFadeInCheap {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* 背景粒子飘浮 */
+@keyframes float {
+  0%   { transform: translateY(0) translateX(0); opacity: 0.2; }
+  50%  { transform: translateY(-20px) translateX(10px); opacity: 0.9; }
+  100% { transform: translateY(0) translateX(0); opacity: 0.2; }
+}
+
+/* 头像光环呼吸（粉色是原站唯一的非主题色用途，可改成强调色） */
+@keyframes avatarGlow {
+  0%   { box-shadow: 0 0 0 3px rgba(228, 154, 195, 0.2), 0 0 12px rgba(228, 154, 195, 0.15); }
+  50%  { box-shadow: 0 0 0 5px rgba(228, 154, 195, 0.45), 0 0 24px rgba(228, 154, 195, 0.3); }
+  100% { box-shadow: 0 0 0 3px rgba(228, 154, 195, 0.2), 0 0 12px rgba(228, 154, 195, 0.15); }
+}
+
+/* 危险条纹滚动。靠 transform 平移一个条纹周期（17px ≈ 12px×√2）无缝循环
+   —— 不要用 background-position，那会每帧重绘 */
+@keyframes hazardStripes {
+  to { transform: translateX(17px); }
+}
+
+/* 闪烁点（纯 opacity，廉价常驻） */
+@keyframes blinkDot {
+  0%, 62%   { opacity: 1; }
+  63%, 100% { opacity: 0.25; }
+}
+
+/* 无缝横向跑马灯（内容复制两份，滚 -50% 即接回起点） */
+@keyframes marqueeLeft {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@keyframes marqueeRight {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* ==========================================================================
+ * 5. 入场机制（三套，按场景选）
+ * ========================================================================== */
+
+/* —— A. 纯 CSS 错落延迟：服务端渲染页面用（无法做平台判定时）——
+   ⚠️ blurFadeIn 会给元素加 filter，所以只能挂「玻璃块本体」或「非玻璃元素」，
+   绝不能挂到玻璃块的容器（网格 section / wrapper div）上，否则整页玻璃失效。
+   animation-delay 由内联 style 逐元素给出，营造自上而下的雾中浮现。 */
+.enter-slow { animation: blurFadeIn 1s var(--ease-main) both; }    /* 稀疏内容 */
+.enter-mid  { animation: blurFadeIn 1.2s var(--ease-main) both; }  /* 切标签页 */
+.enter-fast { animation: blurFadeIn 0.55s var(--ease-main) both; } /* 列表密集（>20 条），
+                                                                     错落延迟上限压在第 8 条 */
+
+/* —— B. 视口触发两段式：滚动列表用（配 EnterOnView.tsx）——
+   未进入视口：保持雾态、不挂任何 animation 声明。这样下次加 .enter-visible 时
+   animation 是全新声明，浏览器必然从 0% 开始播放。
+   离开视口摘类 → 回到雾态 → 为下次重播做好准备。 */
+.enter-onview {
+  position: relative;
+}
+.enter-onview .glass-card {
+  opacity: 0;
+  filter: blur(24px);
+  transform: translateY(20px);
+}
+.enter-onview.enter-visible .glass-card {
+  animation: postEnterBlurReveal 1.1s var(--ease-main) forwards;
+}
+
+/* —— C. Radix / data-state 驱动：弹层用 ——
+   退场动画播放期间组件必须保持挂载（onAnimationEnd 里再延迟卸载） */
+.glass-dropdown {
+  background: rgba(20, 20, 28, 0.55);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  transform-origin: top center;
+}
+.glass-dropdown[data-state="open"] {
+  animation: glassDropdownIn 0.28s var(--ease-bounce) both;
+}
+.glass-dropdown[data-state="closed"] {
+  animation: glassDropdownOut 0.15s ease-out both;
+}
+/* 菜单项：不用 popover 默认色，跟着玻璃调 */
+.glass-dropdown [role="menuitem"],
+.glass-dropdown [role="menuitemcheckbox"],
+.glass-dropdown [role="menuitemradio"] {
+  color: rgba(255, 255, 255, 0.85);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.glass-dropdown [role="menuitem"]:focus,
+.glass-dropdown [role="menuitem"][data-highlighted],
+.glass-dropdown [role="menuitemcheckbox"]:focus,
+.glass-dropdown [role="menuitemradio"]:focus {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  outline: none;
+}
+.glass-dropdown [role="separator"] {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ==========================================================================
+ * 6. 卡片三层结构 —— 本套件的核心，DOM 层级不可合并
+ *
+ *   .card-shell            ← 位移 / 缩放 / z-index / 安卓降耗类
+ *     └─ .card-tilt        ← perspective + rotateX/Y（跟手倾斜）+ box-shadow
+ *          ├─ .glass-card  ← 毛玻璃 + 入场动画 + 流光 ::before
+ *          │    └─ .card-media > img   ← Ken-Burns 放大 / 视差平移
+ *          └─ .card-pop > img          ← 主体越框弹出层（glass-card 的兄弟）
+ *
+ * 为什么不能合并：见文件头铁律 2。位移必须挂 shell，旋转必须挂 tilt。
+ * ========================================================================== */
+
+.card-shell {
+  position: relative; /* 让 hover 时的 z-index 生效（瀑布流列是普通块） */
+  width: 100%;
+  height: auto;
+  contain: layout style;
+  transition: transform 0.45s var(--ease-main);
+}
+
+.card-tilt {
+  /* 主体弹出层的定位基准。不能省：静止态本层无 transform，
+     absolute 子元素会越级找到 .card-shell 去定位 */
+  position: relative;
+  /* 非悬停态的慢速回正 */
+  transition:
+    transform 0.45s var(--ease-main),
+    box-shadow 0.45s var(--ease-main);
+}
+
+/* 图片容器：裁切出 Ken-Burns 效果 + 暗角 */
+.card-media {
+  position: relative;
+  overflow: hidden;
+  border-radius: calc(var(--card-radius) - 2px) calc(var(--card-radius) - 2px) 0 0;
+}
+.card-media::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(0, 0, 0, 0.3), transparent 70%);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.4;
+  transition: opacity 0.3s ease;
+}
+.card-media img {
+  transition: transform 0.6s var(--ease-main);
+}
+
+/* 流光层基础态：斜向高光停在卡左外侧、透明，等 hover 触发扫过。
+   z-index:2 → 位于图片暗角(z1)之上、角标(z10+)之下；不挡点击 */
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(115deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.16) 47%,
+    rgba(190, 242, 100, 0.12) 53%,
+    transparent 62%);
+  transform: translateX(-130%);
+  opacity: 0;
+}
+
+/* 顶部高光线：hover 时亮起 */
+.glass-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+/* —— hover 增强：仅桌面精确指针 ——
+   手机无 hover，手指滑动会误触发 :hover 导致掉帧，且会干扰转场的起点矩形测量 */
+@media (hover: hover) and (pointer: fine) {
+  /* 1) 悬停卡上浮放大 + 抬到同层之上，视觉上「挤」进邻卡的留白 */
+  .card-shell:hover {
+    transform: translateY(-10px) scale(1.05);
+    z-index: 20;
+  }
+
+  /* 2) 同组未悬停的邻卡整体轻微缩小 —— 聚焦其一、其余后退的景深。
+        只用 transform（合成器友好、零重排、不破坏子级 backdrop-filter 采样）；
+        不用 opacity/filter 调暗：那要么被入场动画覆盖、要么破坏毛玻璃 */
+  .card-grid:hover .card-shell:not(:hover) {
+    transform: scale(0.975);
+  }
+
+  /* 3) 卡内图片缓慢放大，被容器 overflow:hidden 裁切 → Ken-Burns */
+  .glass-card:hover .card-media img {
+    transform: scale(1.08);
+  }
+
+  /* 4) hover 时减弱暗角，让图片更鲜亮、配合放大更突出 */
+  .glass-card:hover .card-media::before {
+    opacity: 0.25;
+  }
+
+  /* 5) 玻璃加强：背景提亮 + 模糊加深 + 描边提亮（保持中性、不上强调色） */
+  .glass-card:hover {
+    background: rgba(35, 35, 48, 0.48);
+    backdrop-filter: blur(26px) saturate(160%);
+    -webkit-backdrop-filter: blur(26px) saturate(160%);
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow:
+      0 16px 48px rgba(0, 0, 0, 0.4),
+      0 0 20px rgba(255, 255, 255, 0.1),
+      0 1px 0 rgba(255, 255, 255, 0.15) inset;
+  }
+  .glass-card:hover::after {
+    opacity: 1;
+  }
+
+  /* 6) 流光扫过 */
+  .glass-card:hover::before {
+    animation: cardSheenSweep 0.9s var(--ease-main);
+  }
+
+  /* —— 3D 跟手倾斜（CSS 变量由 PostCardTilt.tsx 逐帧直写）——
+     跟手节奏 0.12s ease-out，CSS 变量变化触发 transform 过渡 → 自带惯性平滑。
+     投影用 box-shadow（不能用 drop-shadow：那是 filter，会破坏子级毛玻璃），
+     圆角对齐卡片防直角阴影穿帮 */
+  .card-tilt.is-tilting {
+    transform: perspective(1000px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg));
+    transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
+    will-change: transform;
+    border-radius: 24px;
+    box-shadow: var(--tilt-shadow-x, 0px) var(--tilt-shadow-y, 0px) 22px rgba(0, 0, 20, 0.3);
+  }
+
+  /* 封面图视差：随鼠标同向平移，速率低于卡体倾斜的视觉位移 → 图与卡分离。
+     scale(1.1) 提供出血量，平移到最大幅度也不露卡底；本条源码序晚于
+     Ken-Burns 的 scale(1.08)（同特异性），倾斜时覆盖之 */
+  .card-tilt.is-tilting .card-media img {
+    transform: translate3d(var(--card-par-x, 0px), var(--card-par-y, 0px), 0) scale(1.1);
+    transition: transform 0.15s ease-out;
+  }
+}
+
+/* —— 主体越框弹出层 ——
+   层内是同一张封面图，用 CSS luminance mask（主体≈白/背景≈黑的灰度图）抠出主体。
+   默认 display:none：只在支持 mask-mode:luminance 的浏览器启用 —— 不支持的会把
+   不透明灰度图当 alpha 蒙版、整张矩形图糊脸。
+   用法：<div class="card-pop" style="aspect-ratio:...">
+           <img src="封面" style="mask-image:url(灰度图); mask-mode:luminance"> */
+.card-pop {
+  display: none;
+}
+
+@supports (mask-mode: luminance) {
+  .card-pop {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 2; /* 盖过卡片本体，弹出时压住标题区 */
+    pointer-events: none;
+  }
+  .card-pop img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(1);
+    transition:
+      opacity 0.25s ease,
+      transform 0.45s var(--ease-main),
+      filter 0.45s var(--ease-main);
+    will-change: transform, opacity;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .card-tilt.is-tilting .card-pop img {
+      opacity: 1;
+      /* 位移 = 底图视差的 2 倍、缩放 1.18 vs 底图 1.1
+         → 主体与背景的速度差就是「弹出感」的来源 */
+      transform: translate3d(
+          calc(var(--card-par-x, 0px) * 2),
+          calc(var(--card-par-y, 0px) * 2),
+          0)
+        scale(1.18);
+      /* 本层在 glass-card 之外，filter 不干扰毛玻璃 */
+      filter: drop-shadow(
+        calc(var(--tilt-shadow-x, 0px) / 2)
+        calc(var(--tilt-shadow-y, 0px) / 2)
+        6px rgba(0, 0, 20, 0.5));
+      transition: opacity 0.18s ease, transform 0.15s ease-out, filter 0.15s ease-out;
+    }
+  }
+
+  /* 触屏「刷到即弹」：由 IntersectionObserver 在卡片过大半屏时打 .pop-auto
+     （仅触屏 + 未减少动效）。两段串行动画，终态与循环首帧同帧、无缝续接 */
+  .card-pop.pop-auto img {
+    opacity: 1;
+    filter: drop-shadow(0 5px 7px rgba(0, 0, 20, 0.45));
+    animation:
+      popAutoIn 0.55s cubic-bezier(0.34, 1.45, 0.64, 1) both,
+      popAutoSway 3.2s ease-in-out 0.55s infinite;
+  }
+  /* 卡体同相倾斜：与 .pop-auto 完全相同的节奏参数，同一次渲染挂类 → 永久锁相，
+     不需要 JS 逐帧驱动。旋转量按「位移↔倾角」耦合系数反推自主体位移 */
+  .card-tilt.tilt-auto {
+    animation:
+      popCardTiltIn 0.55s cubic-bezier(0.34, 1.45, 0.64, 1) both,
+      popCardTiltSway 3.2s ease-in-out 0.55s infinite;
+  }
+}
+
+@keyframes popAutoIn {
+  from { opacity: 0; transform: translate3d(0, 0, 0) scale(1); }
+  to   { opacity: 1; transform: translate3d(0, -3px, 0) scale(1.16) rotate(0deg); }
+}
+/* 待机晃动：左右摆 + 上下浮 + 摇头 + 呼吸缩放，首尾同帧循环无缝 */
+@keyframes popAutoSway {
+  0%   { transform: translate3d(0, -3px, 0) scale(1.16) rotate(0deg); }
+  25%  { transform: translate3d(9px, -7px, 0) scale(1.18) rotate(1.3deg); }
+  50%  { transform: translate3d(0, -12px, 0) scale(1.2) rotate(0deg); }
+  75%  { transform: translate3d(-9px, -7px, 0) scale(1.18) rotate(-1.3deg); }
+  100% { transform: translate3d(0, -3px, 0) scale(1.16) rotate(0deg); }
+}
+@keyframes popCardTiltIn {
+  from { transform: perspective(1000px) rotateX(0deg) rotateY(0deg); }
+  to   { transform: perspective(1000px) rotateX(1.5deg) rotateY(0deg); }
+}
+/* 与 popAutoSway 逐帧对应（0/25/50/75/100% 同刻），主体往哪偏卡片就往哪转 */
+@keyframes popCardTiltSway {
+  0%   { transform: perspective(1000px) rotateX(1.5deg) rotateY(0deg); }
+  25%  { transform: perspective(1000px) rotateX(3.5deg) rotateY(3.6deg); }
+  50%  { transform: perspective(1000px) rotateX(6deg) rotateY(0deg); }
+  75%  { transform: perspective(1000px) rotateX(3.5deg) rotateY(-3.6deg); }
+  100% { transform: perspective(1000px) rotateX(1.5deg) rotateY(0deg); }
+}
+
+/* 需要用 JS 量取卡片矩形（做 hero 转场等）时临时冻结旋转。
+   CSS 动画层叠优先级高于 inline style，JS 写 style.transform="none" 压不住动画，
+   必须靠这个带 !important 的类。量完即摘（同一 tick、无中间绘制 → 不闪） */
+.card-tilt.tilt-freeze {
+  animation: none !important;
+  transform: none !important;
+}
+
+/* ==========================================================================
+ * 7. 瀑布流（react-masonry-css 结构；也可换成任意等宽列布局）
+ * ========================================================================== */
+.card-grid {
+  display: flex;
+  width: auto;
+  margin-left: -1rem; /* 抵消列的 padding-left，防止整体右偏 */
+}
+.card-grid-column {
+  padding-left: 1rem;
+  background-clip: padding-box;
+}
+.card-grid-column > .card-shell {
+  margin-bottom: 1rem;
+}
+@media (max-width: 640px) {
+  .card-grid { margin-left: -0.5rem; }
+  .card-grid-column { padding-left: 0.5rem; }
+  .card-grid-column > .card-shell { margin-bottom: 0.5rem; }
+}
+
+/* ==========================================================================
+ * 8. 常用点缀
+ * ========================================================================== */
+
+/* 柠檬光细线扫掠（输入行底边一次性 / 加载中循环） */
+.line-sweep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1.5px;
+  pointer-events: none;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(163, 230, 53, 0.85) 35%,
+    rgba(190, 242, 100, 0.95) 50%,
+    rgba(163, 230, 53, 0.85) 65%,
+    transparent);
+  transform: translateX(-100%);
+  opacity: 0;
+  animation: lineSweep 0.7s cubic-bezier(0.4, 0, 0.2, 1) 0.12s forwards;
+}
+.line-sweep.is-loading {
+  animation: lineSweep 0.85s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* 面板一次性高光扫掠 */
+.panel-sheen {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.13) 50%, transparent 62%);
+  transform: translateX(-130%);
+  animation: sheenSweepOnce 1.1s cubic-bezier(0.4, 0, 0.2, 1) 0.4s both;
+}
+
+/* 侧边光条菜单项（hover 时左侧强调色光条滑入 + 文字让位） */
+.menu-item {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.1rem 2rem;
+  transition: background-color 0.25s ease, padding-left 0.25s ease;
+  overflow: hidden;
+}
+.menu-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  background: rgb(var(--accent-glow));
+  border-radius: 0 3px 3px 0;
+  transform: translateX(-100%);
+  transition: transform 0.3s var(--ease-bounce);
+  box-shadow: 0 0 12px rgba(132, 204, 22, 0.6);
+}
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  padding-left: 2.5rem;
+}
+.menu-item:hover::before { transform: translateX(0); }
+.menu-item .menu-arrow { transition: transform 0.25s ease, color 0.25s ease; }
+.menu-item:hover .menu-arrow {
+  transform: translateX(4px);
+  color: rgba(255, 255, 255, 0.8);
+}
+.menu-item.is-danger::before {
+  background: #f87171;
+  box-shadow: 0 0 12px rgba(248, 113, 113, 0.6);
+}
+
+/* 危险斜纹条（进度条 / 装饰条），条纹靠 transform 滚动 */
+.hazard-stripes {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -24px;
+  right: -24px;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(0, 0, 0, 0.32) 0 6px,
+    transparent 6px 12px);
+  animation: hazardStripes 0.6s linear infinite;
+  will-change: transform;
+}
+
+/* 头像呼吸 + hover */
+.avatar-breathe {
+  animation: avatarGlow 3s ease-in-out infinite;
+  transition: transform 0.5s var(--ease-bounce);
+}
+.avatar-breathe:hover,
+.avatar-hover:hover {
+  transform: scale(1.15) rotate(10deg);
+}
+.avatar-hover {
+  transition: transform 0.5s var(--ease-bounce);
+  cursor: pointer;
+}
+
+/* 加载转圈 */
+.loader {
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(132, 204, 22, 0.3);
+  border-top: 3px solid rgba(132, 204, 22, 1);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* 性能工具类 */
+.contain-layout { contain: layout; }
+.contain-paint  { contain: paint; }
+.contain-strict { contain: strict; }
+.optimize-gpu {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* ==========================================================================
+ * 9. 平台门控与降级 —— 这一节不是可选项，删了低端安卓会闪屏/掉帧
+ * ========================================================================== */
+
+/* —— 触屏设备：backdrop-filter 永不参与过渡/动画 ——
+   手指滑动时浏览器会对手指下方的元素触发 :hover。若 backdrop-filter 在 transition
+   列表里且 :hover 改了它的值，GPU 每帧都要重新采样并光栅化背景 → 掉帧/花屏/卡顿。
+   桌面端完全不受影响。 */
+@media (hover: none) and (pointer: coarse) {
+  .glass-card {
+    transition:
+      transform 0.4s var(--ease-main),
+      box-shadow 0.4s var(--ease-main),
+      border-color 0.4s var(--ease-main),
+      background-color 0.4s var(--ease-main);
+  }
+  /* hover 时把 backdrop-filter 锁回基础值（桌面才加强到 blur(26px)） */
+  .glass-card:hover {
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+  }
+  .frosted-glass {
+    transition: border-color 0.3s ease, background-color 0.3s ease;
+  }
+  /* 模态遮罩：不过渡/不动画 backdrop-filter，退化为纯 opacity 淡入 */
+  .modal-backdrop {
+    opacity: 0;
+    will-change: opacity;
+    animation-name: backdropFadeInCheap;
+    transition: background-color 0.3s ease;
+  }
+  .tap-highlight-none { -webkit-tap-highlight-color: transparent; }
+  .touch-optimized {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+}
+
+/* —— 安卓 / 鸿蒙降耗（由 JS 按 UA 在 .card-shell 上打类）——
+   .cv-auto = content-visibility 跳绘 + 毛玻璃降级
+   .cv-lite = 只降毛玻璃（带 .card-pop 越框主体的卡必须用这个：
+              content-visibility 自带 paint containment，会把弹出主体裁在容器盒内）
+
+   blur(6px) 仍是实时采样，只把高斯核从 20px 缩到 6px（约省一半）；每帧「复制背景 +
+   合成」的大头还在。若仍卡，下一步是改 backdrop-filter:none + 提高 background
+   不透明度（纯色底 = 数量级省，不透明内容卡视觉损失可接受）。 */
+.card-shell.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px; /* auto 关键字会记住上次渲染的真实高度，
+                                         最大限度避免滚动条抖动 */
+}
+.cv-auto .glass-card,
+.cv-lite .glass-card {
+  backdrop-filter: blur(6px) saturate(1.4);
+  -webkit-backdrop-filter: blur(6px) saturate(1.4);
+  /* 不用 will-change 常驻钉合成层：入场类永不摘除会让每张卡长期占一块 GPU 纹理，
+     滚动累积几十上百层后 WebView 合成器内存吃紧、开始丢瓦片 = 闪屏/花屏。
+     动画播放时浏览器会自动临时提升合成层，只是省掉「起步预热」。 */
+  will-change: auto;
+}
+
+/* 安卓滚动重播：用纯 transform+opacity 替代昂贵的 filter:blur 雾中浮现。
+   首次入场仍走 blur 版；只有「滚出视口再滚回」的重播命中这里（由 JS 在第二次
+   进入视口时打 .enter-replay）。选择器多带一个类，特异性高于上面的 blur 规则。 */
+.enter-replay.enter-onview .glass-card {
+  filter: none;
+  transform: translateY(14px) scale(0.985);
+  will-change: transform, opacity;
+}
+.enter-replay.enter-visible .glass-card {
+  animation: postEnterCheapReveal 0.55s var(--ease-main) forwards;
+}
+
+/* 跑位移动画的层：显式关背面渲染。安卓 WebView 在位移动画下若图层不是稳定 3D
+   合成层，会出现子像素重影、上一帧纹理残留、起始瞬间闪一下。纯合成提示、
+   视觉零变化，iOS 同样受益。⚠️ 仅 opacity 动画或静态元素不要加（加了无益，
+   反而可能多裂图层）。 */
+.gpu-stable {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  -webkit-transform-style: flat;
+  transform-style: flat;
+}
+
+/* —— 无障碍：尊重「减少动态效果」——
+   分三类处理：① 完全关闭 ② 只去位移/缩放、保留颜色与发光（信息层级不能丢）
+   ③ 退化为静置指示。新增动效必须补这一段。 */
+@media (prefers-reduced-motion: reduce) {
+  /* ① 完全关闭 */
+  .enter-slow,
+  .enter-mid,
+  .enter-fast,
+  .panel-glass,
+  .hazard-stripes,
+  .particle,
+  .panel-sheen {
+    animation: none;
+  }
+  .panel-sheen { display: none; }
+
+  /* ② 只去位移/缩放，保留颜色与发光 */
+  .card-shell:hover,
+  .card-grid:hover .card-shell:not(:hover),
+  .glass-card:hover .card-media img,
+  .card-tilt.is-tilting,
+  .card-tilt.is-tilting .card-media img,
+  .card-tilt.tilt-auto {
+    transform: none !important;
+    box-shadow: none !important;
+  }
+  .glass-card:hover::before,
+  .card-tilt.tilt-auto {
+    animation: none !important;
+  }
+  .card-pop {
+    display: none !important;
+  }
+
+  /* ③ 退化为静置指示（仍传达「在加载」） */
+  .line-sweep {
+    animation: none !important;
+    transform: none !important;
+    opacity: 0.7;
+  }
+
+  .grid-texture {
+    opacity: 0.2 !important;
+  }
+}
+
+/* ==========================================================================
+ * 10. 滑动高亮（果冻阴影跟随鼠标在选项间来回移动）
+ *
+ * Mac Dock 风格，由两块互不替代的滑动块组成：
+ *   .jelly-nav-indicator  凹陷块 —— 指针反馈，跟着 hover / 焦点弹性滑移（触屏不出现）
+ *   .jelly-nav-active     发光胶囊 —— 选中状态，跟着 .is-active 的选项滑移（触屏也要）
+ * 位置/宽度由 JS 量取（见 JellyNav.tsx），CSS 只负责观感与弹性缓动。
+ *
+ * 原站用 framer-motion spring 驱动：
+ *   x / width → { type: "spring", stiffness: 420, damping: 28, mass: 0.55 }
+ *   opacity   → { duration: 0.14 }
+ * 这里用等效的过冲贝塞尔实现，零依赖。想要完全一致的手感就换回上面的 spring。
+ * ========================================================================== */
+.jelly-nav {
+  position: relative;          /* 高亮块的定位基准 */
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+/* 高亮块：凹陷感靠「暗底 + 短投影 + 顶部内高光」三件套，不是发光而是压下去 */
+.jelly-nav-indicator {
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0.25rem;
+  left: 0;
+  width: 0;
+  opacity: 0;
+  border-radius: 999px;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.2);
+  box-shadow:
+    0 2px 6px -3px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  /* 位移与宽度带过冲 = 果冻感；透明度快速淡入，让高亮显得「活」而不是慢慢显形 */
+  transition:
+    transform 0.34s cubic-bezier(0.34, 1.4, 0.64, 1),
+    width 0.34s cubic-bezier(0.34, 1.4, 0.64, 1),
+    opacity 0.14s linear;
+  /* JS 只写这两个变量 */
+  transform: translate3d(var(--jn-x, 0px), 0, 0);
+}
+.jelly-nav-indicator.is-on {
+  opacity: 1;
+}
+
+/* 选中态发光胶囊：与凹陷块同原理的第二个滑动块，由 JS 跟踪 .is-active 的选项。
+   为什么不用 .is-active::before —— 伪元素长在各选项自己身上，选中切换只能
+   「这边灭、那边亮」瞬移，不可能有移动动效；独立滑动块才能跟着点击滑过去。
+   选中是「状态」而非指针反馈，所以触屏也要跟随（点击驱动，不门控 hover） */
+.jelly-nav-active {
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0.25rem;
+  left: 0;
+  width: 0;
+  opacity: 0;
+  border-radius: 999px;
+  pointer-events: none;
+  background: rgba(var(--accent-color), 0.18);
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--accent-glow), 0.35),
+    0 0 14px rgba(var(--accent-color), 0.22);
+  transform: translate3d(var(--jn-ax, 0px), 0, 0);
+  /* 比 hover 块略慢半拍：状态切换要稳重，指针反馈要轻快 */
+  transition:
+    transform 0.38s cubic-bezier(0.34, 1.4, 0.64, 1),
+    width 0.38s cubic-bezier(0.34, 1.4, 0.64, 1),
+    opacity 0.14s linear;
+}
+.jelly-nav-active.is-on {
+  opacity: 1;
+}
+/* 首次定位 / 容器尺寸变化后的归位：必须瞬移，不能带着弹性从旧位置滑过去 */
+.jelly-nav-active.no-anim {
+  transition: none;
+}
+
+/* 选项本体：高亮块在其下方，文字在其上方 */
+.jelly-nav-item {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.9rem;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+.jelly-nav-item:hover,
+.jelly-nav-item.is-active {
+  color: #fff;
+}
+
+/* 触屏无 hover，凹陷块永不出现（JS 侧也会跳过监听），但选中胶囊照常跟随点击；
+   降动效则两个滑动块都去掉滑移、只留淡入淡出 */
+@media (prefers-reduced-motion: reduce) {
+  .jelly-nav-indicator,
+  .jelly-nav-active {
+    transition: opacity 0.14s linear;
+  }
+}
+
+/* ==========================================================================
+ * 11. 果冻形变：悬浮按钮 ⇄ 居中弹窗
+ *
+ * 按钮和弹窗是同一次过渡的两端：点击后弹窗从按钮位「飞行 + 放大」弹入，
+ * 一层强调色果冻皮在中途溶解，露出深色面板底继续弹到位，最后才点亮毛玻璃表单。
+ *
+ * 为什么不用 layout FLIP（framer-motion 的 layout / View Transitions）：
+ * 真 FLIP 每帧都在重绘剧烈变尺寸的图层（borderRadius 校正 + boxShadow 插值），
+ * 低端安卓 WebView 实测闪屏、纹理重分配跟不上。这里走「假形变」：面板一次光栅化后
+ * 整体做 transform + opacity，全程合成线程、零每帧重绘，桌面观感几乎无差别。
+ *
+ * 三个时机必须解耦（原站踩坑结论，别合并）：
+ *   0ms    双 rAF 后起跑 —— 面板先以透明态挂载 2 帧完成光栅化，消起手卡顿
+ *   240ms  果冻皮溶解 —— 弹窗刚冲到最大、还在回弹的动态中就化开，绿色不等站定
+ *   480ms  表单点亮 + 毛玻璃淡入 —— scale 贴近 1 才显示。缩放途中绘制
+ *          backdrop-filter 会逐帧重采样卡顿（最初病根），必须等到位；
+ *          其间深色空盒短暂露出约 0.08s。毛玻璃由独立内层 .jelly-morph-glass
+ *          以 opacity 淡入（backdrop-filter 本身不能过渡），面板底色同步转半透明
+ *
+ * 收回路径同理：回缩动画实际 380ms（transform 0.38s / opacity 0.16s+0.22s 延迟），
+ * JS 的收尾定时器（CLOSE_DONE_MS ≈ 420ms）只留 40ms 余量 —— 回缩结束与按钮
+ * 重现之间若留出死时间，用户会感到「点完愣了一下」。按钮重现同帧带 .is-back
+ * 小弹一下，把回缩终点和按钮出现缝成连续动作。
+ *
+ * 原站弹簧参数（想要完全一致就用 framer-motion 换掉下面的贝塞尔）：
+ *   OPEN_SPRING  { stiffness: 290, damping: 21, mass: 1   }  低阻尼过冲回弹
+ *   CLOSE_SPRING { stiffness: 380, damping: 28, mass: 0.9 }  高阻尼干脆利落
+ * ========================================================================== */
+
+/* 悬浮按钮本体 */
+.jelly-fab {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  width: 3.5rem;
+  height: 3.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(163, 230, 53, 0.4);
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(132, 204, 22, 0.95), rgba(163, 230, 53, 0.85));
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+  color: rgba(0, 0, 0, 0.9);
+  cursor: pointer;
+  overflow: hidden;
+  z-index: 50;
+  box-shadow:
+    0 8px 32px rgba(132, 204, 22, 0.5),
+    0 0 20px rgba(132, 204, 22, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  /* ⚠️ 显式列属性、排除 backdrop-filter（铁律 3） */
+  transition:
+    transform 0.4s var(--ease-main),
+    box-shadow 0.4s var(--ease-main),
+    border-color 0.4s var(--ease-main),
+    background 0.4s var(--ease-main);
+}
+.jelly-fab::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.9), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.jelly-fab > svg,
+.jelly-fab > .jelly-fab-icon {
+  position: relative;
+  z-index: 1;
+  transition: transform 0.3s ease;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+@media (hover: hover) and (pointer: fine) {
+  .jelly-fab:hover {
+    transform: translateY(-5px) scale(1.05);
+    background: linear-gradient(135deg, rgba(132, 204, 22, 1), rgba(163, 230, 53, 0.9));
+    border-color: rgba(132, 204, 22, 0.5);
+    box-shadow:
+      0 15px 50px rgba(132, 204, 22, 0.6),
+      0 0 30px rgba(132, 204, 22, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  }
+  .jelly-fab:hover::before { opacity: 0.4; }
+  .jelly-fab:hover > svg,
+  .jelly-fab:hover > .jelly-fab-icon { transform: rotate(90deg) scale(1.15); }
+}
+.jelly-fab:active { transform: translateY(-2px) scale(1.02); }
+
+/* 弹窗收回后按钮归位的一下小弹：回缩终点（面板缩进按钮位）与按钮重现同帧衔接，
+   没有它回缩动画结束到按钮出现之间会有一段「什么都没发生」的空窗。
+   JS 在回缩完成的同一 tick 摘掉 .is-gone 并加 .is-back */
+@keyframes jellyFabPop {
+  0%   { transform: scale(0.5); }
+  100% { transform: scale(1); }
+}
+.jelly-fab.is-back {
+  animation: jellyFabPop 0.32s var(--ease-bounce);
+}
+
+/* 待机脉冲光环 */
+.jelly-fab-ping {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(163, 230, 53, 0.2);
+  animation: jellyPing 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+@keyframes jellyPing {
+  0%   { transform: scale(1); opacity: 0.7; }
+  75%, 100% { transform: scale(1.9); opacity: 0; }
+}
+
+/* 打开时按钮「瞬撤」而不是淡出：否则角落这团强调色与飞向中心的果冻皮会形成
+   「两团绿」连闪。关闭方向仍正常淡入（见 JellyMorph.tsx 的 exit duration 0）。 */
+.jelly-fab.is-gone {
+  display: none;
+}
+
+/* 居中容器：不拦指针，只做定位 */
+.jelly-morph-layer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 50;
+}
+
+/* 遮罩 */
+.jelly-morph-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.7);
+  opacity: 0;
+  /* ⚠️ 默认不拦指针：遮罩若常驻 DOM（非条件渲染），auto 会让透明遮罩挡住整页点击。
+     只有 .is-open 期间才接管点击（用于点击遮罩关闭）。 */
+  pointer-events: none;
+  transition: opacity 0.22s ease-out;
+}
+.jelly-morph-overlay.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 面板：飞行向量由 JS 写进 --jm-x / --jm-y（视口中心 → 按钮中心的位移）。
+   起手态就是「缩到按钮位的一小团」，故 idle 与飞行终态用同一条 transform 公式。
+   背景起手是不透明深色（飞行中由果冻皮盖着、落地前短暂露出深色空盒），
+   落地后才切换成半透明让毛玻璃透出来（见 .is-glass） */
+.jelly-morph-panel {
+  position: relative;
+  width: min(42rem, calc(100vw - 32px));
+  max-height: min(86vh, 46rem);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 24px;
+  background: rgba(21, 23, 27, 0.97);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+  transform: translate3d(var(--jm-x, 0px), var(--jm-y, 0px), 0) scale(0.12);
+  opacity: 1;
+  will-change: transform;
+}
+/* 飞行/弹入：低阻尼过冲（对应 OPEN_SPRING）。background-color 也列进来：
+   .is-glass 在飞行尾声（480ms）就加上，底色转半透明要走过渡而不是瞬变 */
+.jelly-morph-panel.is-flying {
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    transform 0.52s cubic-bezier(0.34, 1.45, 0.5, 1),
+    background-color 0.3s ease-out;
+}
+/* 落地完成态：底色转半透明，毛玻璃内层淡入（JS 与点亮内容同帧打这个类） */
+.jelly-morph-panel.is-glass {
+  background: rgba(21, 23, 27, 0.5);
+}
+/* 回缩：更干脆（对应 CLOSE_SPRING）。opacity 推到缩回尾声 —— 此前由回绿的果冻皮
+   盖住深色面板底，提前淡出会露出空盒。底色同步收回不透明：回缩途中面板若仍
+   半透明，缩小的深色空盒会透出页面内容，显得脏 */
+.jelly-morph-panel.is-closing {
+  transform: translate3d(var(--jm-x, 0px), var(--jm-y, 0px), 0) scale(0.12);
+  opacity: 0;
+  transition:
+    transform 0.38s cubic-bezier(0.32, 1.16, 0.42, 1),
+    opacity 0.16s ease-in 0.22s,
+    background-color 0.2s ease;
+}
+
+/* 毛玻璃内层：毛玻璃绝不挂在飞行/缩放中的面板上（缩放途中 backdrop-filter 逐帧
+   重采样卡顿，是最初的病根），而是落地后由这个独立内层以 opacity 淡入 ——
+   backdrop-filter 不能进 transition（铁律 3），淡入的是「已经糊好的采样结果」。
+   ⚠️ 面板底色必须同步转半透明（.is-glass）：内层的背景采样包含面板自己的底色，
+   底色不透明时模糊的是面板底、而不是面板后面的页面，玻璃会退回纯色块 */
+.jelly-morph-glass {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  opacity: 0;
+  transition: opacity 0.3s ease-out;
+}
+.jelly-morph-panel.is-glass .jelly-morph-glass {
+  opacity: 1;
+}
+/* 回缩途中同样不能带着毛玻璃缩放：关窗瞬间直接摘（不过渡），
+    abrupt 的一帧由同步回绿的果冻皮盖住 */
+.jelly-morph-panel.is-closing .jelly-morph-glass {
+  transition: none;
+  opacity: 0;
+}
+
+/* 果冻皮：盖满面板的强调色渐变层，飞行途中就是「那团绿」，240ms 时溶解。
+   关闭时反向渐入回绿，替面板挡住深色空盒。 */
+.jelly-morph-skin {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(132, 204, 22, 1), rgba(163, 230, 53, 0.9));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  opacity: 1;
+  transition: opacity 0.28s ease-out;
+}
+.jelly-morph-skin.is-dissolved { opacity: 0; }
+
+/* 表单/内容：飞行与缩放阶段整树 visibility:hidden —— 只让纯色面板 + 果冻皮做弹簧，
+   backdrop-filter 子树零绘制。scale 贴近 1 后才点亮。 */
+.jelly-morph-form {
+  position: relative;
+  z-index: 1;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+.jelly-morph-form.is-lit {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* 降动效：去掉飞行与缩放，改为原地淡入淡出；果冻皮直接不出现。
+   毛玻璃内层只是静态滤镜 + 淡入，不位移不缩放，保留（信息层级不能丢） */
+@media (prefers-reduced-motion: reduce) {
+  .jelly-morph-panel {
+    transform: none;
+    opacity: 0;
+    transition: opacity 0.2s ease-out;
+  }
+  .jelly-morph-panel.is-flying {
+    transform: none;
+    opacity: 1;
+    transition: opacity 0.2s ease-out, background-color 0.2s ease-out;
+  }
+  .jelly-morph-panel.is-closing {
+    transform: none;
+    opacity: 0;
+    transition: opacity 0.16s ease-in;
+  }
+  .jelly-morph-skin { display: none; }
+  .jelly-fab-ping { animation: none; }
+  .jelly-fab.is-back { animation: none; }
+}
+
+/* ==========================================================================
+ * 12. 霓虹文字 + 颜文字 LED 点阵（直播页终端美学的可移植部分）
+ *
+ * 原站位置：components/live-wall-content.tsx（弹幕霓虹，类 scoped 在
+ * .live-wall-page 下）与 live-host-stage.tsx（心情脸点阵）。
+ * 配套组件：MoodFace.tsx（渲染 + 自适应灯珠尺寸）、mood-faces.ts（点阵零件库 ——
+ * 每个符号一块 9 行小像素块，compose 横拼成整条颜文字；不依赖系统字体，
+ * 生僻符号 ꒳ ꐦ ⸝ 直接画形状，不会变豆腐块）。
+ * ========================================================================== */
+
+/* —— 8 色霓虹文字（强发光）：多层 text-shadow，近处亮实、远处同色扩散 ——
+   套件里不带作用域、全站可用；原站是终端页专用所以 scoped，想限制作用域
+   自己包一层（如 .terminal-page .neon-pink { ... }）即可 */
+.neon-cyan   { color: #0ff;    text-shadow: 0 0 8px #0ff, 0 0 18px #0ff, 0 0 36px #0af; }
+.neon-green  { color: #0f8;    text-shadow: 0 0 8px #0f8, 0 0 18px #0f8, 0 0 36px #0f4; }
+.neon-pink   { color: #f5a6d1; text-shadow: 0 0 8px #f5a6d1, 0 0 18px #f5a6d1, 0 0 36px #f5a6d1; }
+.neon-yellow { color: #ff0;    text-shadow: 0 0 8px #ff0, 0 0 18px #ff0, 0 0 36px #fa0; }
+.neon-red    { color: #f55;    text-shadow: 0 0 8px #f55, 0 0 20px #f00, 0 0 40px #f00; }
+.neon-purple { color: #c084fc; text-shadow: 0 0 8px #c084fc, 0 0 18px #c084fc, 0 0 36px #a855f7; }
+.neon-orange { color: #fb923c; text-shadow: 0 0 8px #fb923c, 0 0 18px #fb923c, 0 0 36px #f97316; }
+.neon-lime   { color: #a3e635; text-shadow: 0 0 8px #a3e635, 0 0 18px #a3e635, 0 0 36px #84cc16; }
+
+/* 故障闪烁：7s 周期、96-98% 处微抖一下再恢复 —— 像老霓虹管偶尔接触不良。
+   多条同屏时用内联 style 写 --flicker-delay（单位：秒）错峰，千万别同相齐抖。
+   原站类名是 .flicker-part（scoped 在 .live-wall-page 下） */
+@keyframes neonPartFlicker {
+  0%, 96%, 100% { opacity: 1; }
+  97% { opacity: 0.55; }
+  98% { opacity: 1; }
+}
+.neon-flicker {
+  animation: neonPartFlicker 7s infinite;
+  animation-delay: calc(var(--flicker-delay, 0) * 1s);
+}
+
+/* 打字机光标：currentColor 实心块 + 双层同色光晕，跟在谁后面就是谁的颜色 */
+.neon-cursor {
+  display: inline-block;
+  width: 9px;
+  height: 16px;
+  vertical-align: -3px;
+  margin-left: 3px;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor, 0 0 18px currentColor;
+  animation: neonCursorBlink 1s step-end infinite;
+}
+.neon-cursor.typing { animation-duration: 0.6s; }
+@keyframes neonCursorBlink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+/* —— 颜文字 LED 点阵（心情脸）——
+   数据侧：mood-faces.ts 的 MOOD_FACES（'1'=亮 '0'=灭 的 9 行字符串数组）；
+   渲染侧（MoodFace.tsx / demo 页尾脚本）：按容器宽度内联算灯珠尺寸 —— 各条
+   颜文字宽度不同，必须自适应缩放才能保证整条显示；发光色写进 --led-color。
+   灭珠用固定极淡白做「未点亮 LED」衬底 —— 不用 color-mix，老 WebView 也稳 */
+.led-face {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+/* 测量容器：JS 读它的宽度来定灯珠尺寸 */
+.led-face-fit {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+.led-face-grid {
+  display: grid;
+  gap: 1px;
+  /* 整条颜文字轻轻上下浮动（不动会显得很死） */
+  animation: ledFaceBob 3.8s ease-in-out infinite;
+}
+.led-face-dot {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+}
+.led-face-dot.on {
+  background: var(--led-color, #f9a8d4);
+  box-shadow:
+    0 0 3px var(--led-color, #f9a8d4),
+    0 0 6px var(--led-color, #f9a8d4);
+}
+/* 稀疏「坏灯珠」：按位置哈希挑约 1/5 的亮珠周期性短暂熄灭再亮（呼吸感）。
+   延迟/时长由渲染侧用确定性哈希错开 —— 不用 Math.random，SSR 安全 */
+.led-face-dot.flick.on {
+  animation-name: ledFaceFlick;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+}
+@keyframes ledFaceFlick {
+  0%, 38%, 62%, 100% { opacity: 1; }
+  46%, 54% { opacity: 0.1; }
+}
+@keyframes ledFaceBob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2.5px); }
+}
+.led-face-label {
+  /* 原站用 Share Tech Mono（Google Fonts）；套件不引字体，用系统等宽栈 */
+  font-family: ui-monospace, "SF Mono", "Consolas", monospace;
+  font-size: 9px;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em; /* 抵消末字符的 letter-spacing，视觉居中 */
+  color: var(--led-color, #f9a8d4);
+  opacity: 0.55;
+  text-shadow: 0 0 7px var(--led-color, #f9a8d4);
+}
+
+/* 降动效：闪烁类（霓虹微抖 / 光标 / 坏灯珠）与浮动整组关掉 —— 频闪对光敏
+   用户不友好；颜色与发光保留（信息层级不丢） */
+@media (prefers-reduced-motion: reduce) {
+  .neon-flicker,
+  .neon-cursor,
+  .led-face-grid,
+  .led-face-dot.flick.on {
+    animation: none;
+  }
+}
+
+/* ==========================================================================
+ * 13. 影院海报墙（多列斜向来回滚动 + 聚光灯 hover）
+ *
+ * 整体容器 rotate 负角度，内部列的 translateY 动画在视觉上就变成「沿斜向滚动」。
+ * 奇偶列方向相反（一来一回）、每列速度不同，节奏才有机。配套组件：CinemaWall.tsx。
+ *
+ * 结构（层级不可省）：
+ *   .cinema-stage            ← 舞台：暗色衬底 + overflow:hidden + 上下羽化（伪元素）
+ *     └─ .cinema-tilted      ← 整体旋转层（rotate + scale 出血，防旋转露角）
+ *         └─ .cinema-cols    ← 横向 flex 布列
+ *             └─ .cinema-col     ← 单列（overflow:hidden 裁切，hover 时暂停本列）
+ *                 └─ .cinema-col-track  ← 滚动层：内容复制两份，translateY 0↔-50% 无缝循环
+ *                     └─ .cinema-card × 2N
+ *
+ * ⚠️ 无缝循环的前提：track 里是**两份完全相同的内容**，translateY(-50%) 时第二份
+ *    恰好对齐到第一份的起点。列内卡片数量为奇数也没关系，两份拼接后循环点自然对齐。
+ * ⚠️ 聚光灯用 `.cinema-stage:has(.cinema-card:hover)` —— :has() 不支持的老浏览器
+ *    自动退化为「只有被悬停的卡自己放大发光，邻卡不降亮」，布局不坏（渐进增强）。
+ * ========================================================================== */
+
+.cinema-stage {
+  position: relative;
+  overflow: hidden;
+  /* 暗色椭圆衬底：让海报从黑底里跳出来 */
+  background: radial-gradient(ellipse at center, rgba(30, 20, 40, 0.3), transparent 70%);
+}
+/* 上下羽化：海报墙与页面上下内容（如霓虹跑马灯）之间柔和过渡，不硬切 */
+.cinema-stage::before,
+.cinema-stage::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 64px;
+  z-index: 10;
+  pointer-events: none;
+}
+.cinema-stage::before { top: 0; background: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), transparent); }
+.cinema-stage::after  { bottom: 0; background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent); }
+
+.cinema-tilted {
+  position: absolute;
+  inset: 0;
+  /* scale 出血：旋转后的矩形四角会缩进，放大一档补齐、由 stage 裁掉 */
+  transform: rotate(-10deg) scale(1.1);
+  transform-origin: center;
+}
+@media (max-width: 640px) {
+  /* 窄屏列更少（组件侧 4 列），旋转角略减、scale 略增防露角 */
+  .cinema-tilted { transform: rotate(-8deg) scale(1.15); }
+}
+
+.cinema-cols {
+  display: flex;
+  gap: 8px;
+  height: 100%;
+  width: 100%;
+}
+@media (min-width: 768px) {
+  .cinema-cols { gap: 10px; }
+}
+
+.cinema-col {
+  position: relative;
+  overflow: hidden;
+  min-width: 0; /* flex 子项收缩时不被内容撑开 */
+  flex: 1;
+}
+
+.cinema-col-track {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  will-change: transform;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  /* 时长由组件按列内联给（每列不同，节奏才不机械） */
+}
+.cinema-col-track.scroll-down { animation-name: cinemaScrollDown; }
+.cinema-col-track.scroll-up   { animation-name: cinemaScrollUp; }
+
+@keyframes cinemaScrollDown {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-50%); }
+}
+@keyframes cinemaScrollUp {
+  from { transform: translateY(-50%); }
+  to   { transform: translateY(0); }
+}
+
+/* 鼠标悬停某列时整列停滚 —— 让用户能看清想看的那列，关键交互 */
+.cinema-col:hover .cinema-col-track {
+  animation-play-state: paused;
+}
+
+/* —— 海报卡 ——
+   原站卡片用 Tailwind 工具类拼的，套件不依赖 Tailwind，这里展开成等值 CSS */
+.cinema-card {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  text-align: left;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  /* 默认态显式给 filter，hover 的亮度/饱和度变化才有过渡起点 */
+  filter: brightness(1) saturate(1);
+  transition:
+    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.35s ease,
+    filter 0.35s ease;
+}
+.cinema-card img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.7s ease;
+}
+.cinema-card:hover img { transform: scale(1.05); }
+
+/* 底部渐变蒙层 + 标题/署名 */
+.cinema-card-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 8px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.9), rgba(0, 0, 0, 0.6), transparent);
+}
+.cinema-card-caption h4 {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: #fff;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cinema-card-caption p {
+  margin: 0;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (min-width: 768px) {
+  .cinema-card-caption h4 { font-size: 12px; }
+}
+
+/* 加载失败/无图兜底：粉紫渐变 + 扫描线 + 大字标题，保住「海报感」而非空白 */
+.cinema-card-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background:
+    repeating-linear-gradient(0deg,
+      rgba(255, 255, 255, 0.06) 0 1px,
+      transparent 1px 3px),
+    linear-gradient(to bottom right,
+      rgba(131, 24, 67, 0.7),
+      rgba(88, 28, 135, 0.6),
+      rgba(136, 19, 55, 0.7));
+}
+.cinema-card-fallback span {
+  position: relative;
+  z-index: 1;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.85);
+  line-height: 1.3;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+/* —— 聚光灯 hover（Apple TV / Netflix 风格）——
+   被悬停的卡：上抬放大 + 强光晕 + 提到顶层；其余所有卡降亮降饱和。
+   需要挂在 .cinema-stage 上（不是 .cinema-cols）：:has() 只看后代，挂对层级 */
+.cinema-card:hover {
+  transform: translateY(-4px) scale(1.04);
+  box-shadow:
+    0 0 40px rgba(244, 114, 182, 0.55),
+    0 12px 40px rgba(0, 0, 0, 0.5);
+  z-index: 5;
+  filter: brightness(1.08) saturate(1.1);
+}
+.cinema-stage:has(.cinema-card:hover) .cinema-card:not(:hover) {
+  filter: brightness(0.45) saturate(0.75);
+}
+
+/* 降动效：列停滚（停在首屏）、卡片位移缩放全去；聚光灯的亮度变化保留（信息层级） */
+@media (prefers-reduced-motion: reduce) {
+  .cinema-col-track { animation: none; }
+  .cinema-card img { transform: none; }
+  .cinema-card,
+  .cinema-card:hover {
+    transition: filter 0.2s ease, box-shadow 0.2s ease;
+    transform: none;
+  }
+}
+
+/* ==========================================================================
+ * 14. LED 霓虹跑马灯（广告牌文字带）
+ *
+ * LED 广告牌观感的拼图：暗粉灯箱底 + 灯珠纹理瓦片 + 粗等宽字多层光晕 +
+ * 上下灯管高光缝。纯 CSS；配套组件：NeonMarquee.tsx（方向/速度/变体/色调/闪烁错峰）。
+ * 滚动复用第 4 节的 marqueeLeft / marqueeRight 关键帧（translateX 0↔-50%），
+ * 无缝循环同样要求 track 里是两份相同内容。
+ * ========================================================================== */
+
+.neon-marquee {
+  position: relative;
+  width: 100%;
+  height: 72px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #1a0612 0%, #0f0409 50%, #1a0612 100%);
+  border-top: 1px solid rgba(255, 80, 140, 0.2);
+  border-bottom: 1px solid rgba(255, 80, 140, 0.2);
+  box-shadow:
+    0 0 30px rgba(236, 72, 153, 0.25) inset,
+    0 0 20px rgba(236, 72, 153, 0.15);
+}
+
+/* LED 灯珠底层：极小径向渐变瓦片铺满 + screen 混合，形成点阵感 */
+.neon-marquee-leds {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    circle,
+    rgba(255, 90, 160, 0.18) 1.2px,
+    transparent 1.5px
+  );
+  background-size: 8px 8px;
+  opacity: 0.8;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+/* 跑马灯轨道：两份内容首尾相接（第二份由组件渲染） */
+.neon-marquee-track {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform;
+}
+.neon-marquee-track.to-left  { animation-name: marqueeLeft; }
+.neon-marquee-track.to-right { animation-name: marqueeRight; }
+
+/* 文本：大号粗体等宽字 + 多层 text-shadow 光晕（近处亮白、远处粉色扩散） */
+.neon-marquee-text {
+  display: inline-block;
+  padding: 0 1.5rem;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Consolas", monospace;
+  font-weight: 800;
+  font-size: clamp(22px, 3.2vh, 36px);
+  letter-spacing: 0.18em;
+  color: #ffe8f1;
+  text-shadow:
+    0 0 2px #fff,
+    0 0 6px rgba(255, 220, 235, 0.95),
+    0 0 14px rgba(255, 100, 170, 0.85),
+    0 0 28px rgba(236, 72, 153, 0.7),
+    0 0 48px rgba(190, 24, 93, 0.5);
+  /* 招牌式闪烁。delay 经 --neon-flicker-delay 注入：多条同屏（如影院模式上下
+     两条）时给其中一条负值（-2 ~ -3s）错峰，避免同频闪干扰眼睛 */
+  animation: neonSignFlicker 4.5s ease-in-out infinite;
+  animation-delay: var(--neon-flicker-delay, 0s);
+}
+
+@keyframes neonSignFlicker {
+  0%, 100% { opacity: 1; }
+  47%      { opacity: 1; }
+  48%      { opacity: 0.75; }
+  49%      { opacity: 1; }
+  72%      { opacity: 1; }
+  73%      { opacity: 0.85; }
+  74%      { opacity: 1; }
+}
+
+/* 上下细缝高光：模拟灯管与金属外壳之间的反光 */
+.neon-marquee-highlight-top,
+.neon-marquee-highlight-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  pointer-events: none;
+}
+.neon-marquee-highlight-top {
+  top: 0;
+  background: linear-gradient(90deg,
+    transparent, rgba(255, 180, 210, 0.5), rgba(255, 180, 210, 0.8), rgba(255, 180, 210, 0.5), transparent);
+}
+.neon-marquee-highlight-bottom {
+  bottom: 0;
+  background: linear-gradient(90deg,
+    transparent, rgba(190, 24, 93, 0.6), transparent);
+}
+
+/* —— soft 变体：登录/注册等氛围场景。更薄、不闪烁、光晕收敛 —— */
+.neon-marquee-soft {
+  height: 56px;
+  background: linear-gradient(180deg,
+    rgba(26, 10, 22, 0.35) 0%,
+    rgba(12, 6, 12, 0.25) 50%,
+    rgba(26, 10, 22, 0.35) 100%);
+  border-top: 1px solid rgba(255, 140, 190, 0.1);
+  border-bottom: 1px solid rgba(255, 140, 190, 0.1);
+  box-shadow:
+    0 0 12px rgba(236, 72, 153, 0.08) inset,
+    0 0 6px rgba(236, 72, 153, 0.06);
+}
+.neon-marquee-soft .neon-marquee-leds {
+  background-image: radial-gradient(circle, rgba(255, 140, 190, 0.08) 1px, transparent 1.3px);
+  background-size: 10px 10px;
+  opacity: 0.5;
+}
+.neon-marquee-soft .neon-marquee-text {
+  font-size: clamp(14px, 2vh, 22px);
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: rgba(255, 230, 240, 0.85);
+  text-shadow:
+    0 0 1px rgba(255, 255, 255, 0.6),
+    0 0 4px rgba(255, 220, 235, 0.5),
+    0 0 10px rgba(255, 130, 180, 0.4),
+    0 0 20px rgba(236, 72, 153, 0.25);
+  animation: none; /* 明确禁掉 bold 变体的闪烁 */
+}
+.neon-marquee-soft .neon-marquee-highlight-top {
+  background: linear-gradient(90deg, transparent, rgba(255, 180, 210, 0.25), transparent);
+}
+.neon-marquee-soft .neon-marquee-highlight-bottom {
+  background: linear-gradient(90deg, transparent, rgba(190, 24, 93, 0.2), transparent);
+}
+
+/* —— lime 色调：换主题色场景（覆盖 pink 的底/描边/灯珠/文字/高光）—— */
+.neon-marquee-lime {
+  background: linear-gradient(180deg, #0a1608 0%, #060d04 50%, #0a1608 100%);
+  border-top: 1px solid rgba(132, 204, 22, 0.22);
+  border-bottom: 1px solid rgba(132, 204, 22, 0.22);
+  box-shadow:
+    0 0 30px rgba(132, 204, 22, 0.25) inset,
+    0 0 20px rgba(132, 204, 22, 0.15);
+}
+.neon-marquee-lime .neon-marquee-leds {
+  background-image: radial-gradient(circle, rgba(163, 230, 53, 0.18) 1.2px, transparent 1.5px);
+}
+.neon-marquee-lime .neon-marquee-text {
+  color: #eaffd0;
+  text-shadow:
+    0 0 2px #ffffff,
+    0 0 6px rgba(234, 255, 208, 0.95),
+    0 0 14px rgba(163, 230, 53, 0.85),
+    0 0 28px rgba(132, 204, 22, 0.7),
+    0 0 48px rgba(101, 163, 13, 0.5);
+}
+.neon-marquee-lime .neon-marquee-highlight-top {
+  background: linear-gradient(90deg,
+    transparent, rgba(210, 240, 170, 0.5), rgba(210, 240, 170, 0.8), rgba(210, 240, 170, 0.5), transparent);
+}
+.neon-marquee-lime .neon-marquee-highlight-bottom {
+  background: linear-gradient(90deg, transparent, rgba(101, 163, 13, 0.6), transparent);
+}
+/* lime + soft 组合：光晕更内敛 */
+.neon-marquee-lime.neon-marquee-soft .neon-marquee-text {
+  text-shadow:
+    0 0 1px rgba(255, 255, 255, 0.6),
+    0 0 4px rgba(234, 255, 208, 0.5),
+    0 0 10px rgba(163, 230, 53, 0.4),
+    0 0 20px rgba(132, 204, 22, 0.25);
+}
+
+/* 移动端字号与高度降档 */
+@media (max-width: 640px) {
+  .neon-marquee { height: 54px; }
+  .neon-marquee-text {
+    font-size: clamp(16px, 4vw, 22px);
+    letter-spacing: 0.15em;
+  }
+  .neon-marquee-soft { height: 44px; }
+  .neon-marquee-soft .neon-marquee-text {
+    font-size: clamp(12px, 3vw, 16px);
+    letter-spacing: 0.15em;
+  }
+}
+
+/* 降动效：滚动与闪烁全停（文字静止可见），亮度/颜色不变。
+   soft 变体本来就不闪，这条主要管 bold 的 track 与闪烁 */
+@media (prefers-reduced-motion: reduce) {
+  .neon-marquee-track { animation: none; }
+  .neon-marquee-text { animation: none; }
+}

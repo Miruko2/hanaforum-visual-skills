@@ -1,0 +1,43 @@
+# 已知的「站点里查不到」清单 —— 基线由 check-refs.mjs --update-baseline 生成，注释手写。
+# 这些不是文档腐烂：套件（assets/）自成一套命名，站点那边用的是 Tailwind 工具类或别的类名。
+# 格式：类型<TAB>符号（行尾 # 之后是注释）。手工删掉某行 = 要求脚本重新盯住它。
+
+# —— 套件把卡片三层结构展开成了具名类，站点那边这三层是 Tailwind 工具类 ——
+css-class	.card-grid
+css-class	.card-pop
+css-class	.card-shell
+css-class	.card-tilt
+
+# —— 影院墙：站点卡片用 Tailwind，套件展开成具名类（见 08 §3 末尾）——
+css-class	.cinema-card-caption
+css-class	.cinema-card-fallback
+css-class	.cinema-cols
+
+# —— 入场机制：站点前缀是 .post-enter-*，套件用 .enter-*（见 11 §8）——
+css-class	.enter-onview
+css-class	.enter-slow
+css-class	.enter-visible
+
+# —— 11 §3 新引入：站点的 .glass-card::before 被 hover 流光占用，故套件另起一类 ——
+css-class	.glass-top-sheen
+
+# —— 果冻形变 / 滑动高亮：站点侧是 framer-motion 驱动，没有对应 CSS 类 ——
+css-class	.is-closing
+css-class	.is-flying
+css-class	.is-glass
+css-class	.jelly-fab
+css-class	.jelly-morph-glass
+css-class	.jelly-nav
+css-class	.jelly-nav-active
+css-class	.jelly-nav-indicator
+
+# —— 直播页终端美学：站点内联在组件里，套件抽成了类 ——
+css-class	.neon-cursor
+css-class	.neon-flicker
+
+# —— 套件专有 ——
+css-class	.line-sweep
+css-class	.panel-glass	# 站点对应物叫 .profile-glass
+
+# —— 集邮册的原型文件已被删除；站点自己的注释也还指着它，文档保留作历史出处 ——
+site-path	public/stamp-archive-demo.html
