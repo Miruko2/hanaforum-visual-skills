@@ -98,8 +98,8 @@
 
 | 效果 | 位置 | 为什么没抽 |
 | --- | --- | --- |
-| 绝区零式撕纸转场 | `04` + `components/page-ribbon-transition.tsx` | 40+ 个类、20+ 条关键帧、4 套主题变量、组件侧时序强耦合 |
-| View Transitions 立方体翻页 | `04` | 依赖 `lib/view-transition-nav.ts` 的导航环模型 |
+| 绝区零式撕纸转场 | skill `page-transition-system` | **已抽成独立 skill**，含文档 + `assets/ribbon-transition.css` / `RibbonTransition.tsx` / `demo.html` |
+| View Transitions 立方体翻页 | `page-transition-system` 的 `05` §4 | 休眠备选，`TRANSITION_MODE = "ribbon"` 够不到 |
 | 音乐页音频可视化 / 液面折射 / 地形波 / 歌词水波 | skill `music-visual-system` 的 `05` `06` | GLSL/WebGL + 自托管引擎 + SVG 滤镜链。音乐页另有自己的可复制套件（鱼眼卡片墙），见 `music-visual-system/assets/` |
 | 直播页终端美学（壳层） | `06` A | 8 色霓虹与心情脸点阵**已抽入套件**（第 12 节 + `MoodFace.tsx` / `mood-faces.ts`）；剩下的 CRT 底噪、卷帘壳、舞台光晕/粒子背景与直播业务耦合深 |
 | 集邮册 / 彩带 Hero | `07` `08` | 强主题装饰，通用性低，但文档里数值给全了、可照抄 |

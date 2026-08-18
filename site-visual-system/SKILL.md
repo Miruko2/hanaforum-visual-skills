@@ -36,6 +36,7 @@ description: 本站（家园 /home 之外）全部页面的视觉与动效系统
 | 排查「毛玻璃失效 / 动画不生效」 | `references/01` 第 5 节 + `references/02` 第 6 节 | 九成是 `filter` × `backdrop-filter` 祖孙共存 |
 | 排查「安卓掉帧 / 闪屏 / 花屏」 | `references/09` + `references/02` 第 5 节 | 09 末尾有降级手法的性价比排序 |
 | 影院海报墙 / 霓虹跑马灯 | `references/08` 第 3 / 第 4 节 + `assets/CinemaWall.tsx` / `NeonMarquee.tsx` | 两者都已抽成独立组件 |
+| 路由转场 / 切页闪屏 / 撕纸遮罩 | 换 skill：`page-transition-system` | 不在本 skill 范围内 |
 | 音乐页 `/music` 的任何东西 | 换 skill：`music-visual-system` | 不在本 skill 范围内 |
 
 一次读取上限：**除非表里明写，否则不要一次开超过 2 册**。缺什么再补读一册，
@@ -92,9 +93,9 @@ description: 本站（家园 /home 之外）全部页面的视觉与动效系统
 
 | 效果 | 读这里 | 可复制成品 |
 | --- | --- | --- |
-| View Transitions 立方体翻页 | `04` §1 | 未抽，原因见 `10` §5 |
-| 绝区零式撕纸色块 wipe（含安卓精简） | `04` §2 §3 | 未抽，原因见 `10` §5 |
-| 左右滑页手势 | `04` §4（＝`05` §12） | — |
+| 绝区零式撕纸遮罩 / 切页闪屏 / 给新页加转场卡 | 换 skill：`page-transition-system` | `page-transition-system/assets/` |
+| View Transitions 立方体翻页（休眠备选，看不到） | `page-transition-system` 的 `05` §4 | 未在跑 |
+| 左右滑页手势 | `page-transition-system` 的 `05`（入口仍在 `05` §12） | — |
 
 ### 装饰与氛围
 
@@ -145,7 +146,7 @@ description: 本站（家园 /home 之外）全部页面的视觉与动效系统
 | `references/01-tokens-and-glass.md` | 令牌、色板、Tailwind 主题、十一级毛玻璃体系、`filter` × `backdrop-filter` 铁律 |
 | `references/02-motion-primitives.md` | 缓动语言、关键帧总表、三套入场机制、降级约定、平台门控矩阵、合成器纪律 |
 | `references/03-post-cards.md` | 帖子卡全套（首页瀑布流核心） |
-| `references/04-page-transitions.md` | 路由转场与滑页手势 |
+| `references/04-page-transitions.md` | 路由转场已迁到 `page-transition-system`，这里只留指路 |
 | `references/05-navigation-overlays.md` | 导航栏、菜单、弹层、悬浮发帖按钮、切换条 |
 | `references/06-live-and-music.md` | 直播页。音乐页已迁出到 `music-visual-system`，这里只留指路 |
 | `references/07-profile-and-auth.md` | 个人中心、用户主页、集邮册、登录注册 |

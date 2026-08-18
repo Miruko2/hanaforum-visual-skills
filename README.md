@@ -1,12 +1,13 @@
 # hanako visual skills
 
-两个给 AI 编码代理用的视觉系统 skill，描述 [hanaforum](https://github.com/Miruko2/hanaforum)
+三个给 AI 编码代理用的视觉系统 skill，描述 [hanaforum](https://github.com/Miruko2/hanaforum)
 这个站点的 UI 与动效体系，并附带可以脱离该站点直接使用的成品代码。
 
 | Skill | 覆盖范围 | 体量 |
 | --- | --- | --- |
-| `site-visual-system/` | 站点除 3D 家园与音乐页之外的全部页面：设计令牌、十一档毛玻璃、关键帧库、逐页效果目录、平台降级 | 12 篇文档 + 11 个成品文件 |
+| `site-visual-system/` | 站点除 3D 家园、音乐页、路由转场之外的全部页面：设计令牌、十一档毛玻璃、关键帧库、逐页效果目录、平台降级 | 12 篇文档 + 11 个成品文件 |
 | `music-visual-system/` | 音乐页 `/music`：3D 鱼眼卡片墙、播放器一家、音频可视化、独立的性能预算 | 9 篇文档 + 5 个成品文件 |
+| `page-transition-system/` | 路由级切页转场：绝区零式撕纸遮罩、时序状态机、安卓花屏对策、导航环与滑页手势 | 6 篇文档 + 4 个成品文件 |
 
 两个 skill 的 `SKILL.md` 开头都有**按需读取路由表**，可以精确定位到某一册的某一节，
 不必通读。`site-visual-system` 另外有一张覆盖全部效果的索引。
@@ -26,9 +27,10 @@ git clone $REPO .claude/skills                      # Claude Code（项目级）
 ⚠️ 克隆到站点仓库的 `.kiro/skills` 下时不会互相干扰：站点的 `.gitignore` 把整个 `.kiro/`
 排除了，两个 git 仓库物理嵌套但各管各的。
 
-只想要成品代码、不关心文档的，直接拿两个 `assets/` 目录：
+只想要成品代码、不关心文档的，直接拿三个 `assets/` 目录：
 `site-visual-system/assets/`（毛玻璃 + 高斯模糊动效套件，纯 CSS + 8 个零依赖 React 组件）、
-`music-visual-system/assets/`（3D 鱼眼卡片墙）。各自带自包含的 `demo.html`，双击即开。
+`music-visual-system/assets/`（3D 鱼眼卡片墙）、
+`page-transition-system/assets/`（撕纸转场，纯 CSS + React 驱动）。各自带自包含的 `demo.html`，双击即开。
 
 ## 与站点仓库的关系，以及文档为什么不会烂
 
@@ -66,6 +68,10 @@ music-visual-system/
   SKILL.md
   references/01-08.md
   assets/               鱼眼墙：数学核心 + React 封装 + CSS + demo.html
+page-transition-system/
+  SKILL.md              总纲 + 按需读取路由表
+  references/01-05.md   时序状态机 / 扫屏层 / 装饰层 / 安卓对策 / 触发与导航环
+  assets/               撕纸转场：ribbon-transition.css + RibbonTransition.tsx + demo.html
 scripts/
   check-refs.mjs        引用校验
   known-external.txt    基线（附理由）

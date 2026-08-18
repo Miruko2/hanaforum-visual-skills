@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ribbon-transition · 绝区零式 MG 路由转场演示</title>
+<link rel="stylesheet" href="./ribbon-transition.css">
+<style>
+  /* ↓ 以下全是演示页自己的壳，与转场套件无关 ↓ */
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #fff;
+    background: #07080b;
+    overflow: hidden;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* 假页面：转场遮罩背后被换掉的东西 */
+  #page {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 24px;
+    text-align: center;
+  }
+  #page h1 {
+    margin: 0;
+    font-size: clamp(38px, 9vw, 96px);
+    font-weight: 900;
+    font-style: italic;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  #page p { margin: 0; opacity: 0.62; letter-spacing: 0.2em; font-size: 13px; }
+  #page .badge {
+    font-size: 12px;
+    letter-spacing: 0.3em;
+    padding: 6px 14px;
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 999px;
+    opacity: 0.7;
+  }
+
+  /* 控制条 */
+  #bar {
+    position: fixed;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: rgba(16, 18, 24, 0.86);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px;
+    backdrop-filter: blur(12px);
+    max-width: calc(100vw - 24px);
+  }
+  #bar button {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #fff;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+  #bar button:hover { background: rgba(255,255,255,0.16); }
+  #bar button:active { transform: scale(0.96); }
+  #bar button.on { background: #2ee36b; color: #06210f; border-color: transparent; }
+  #bar .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,0.14); margin: 0 2px; }
+
+  #hint {
+    position: fixed;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    opacity: 0.45;
+    text-align: center;
+    line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+
+<!-- 被转场换掉的"页面" -->
+<div id="page">
+  <div class="badge" id="pgNo">01 / 04</div>
+  <h1 id="pgWord">HOME</h1>
+  <p id="pgSub">ホーム · 首页</p>
+</div>
+
+<div id="hint">
+  ← → 方向键切页 ｜ 触屏左右轻扫 ｜ 点下方按钮<br>
+  每次转场随机换一套主题色（必与上次不同）
+</div>
+
+<div id="bar">
+  <button data-go="/">HOME</button>
+  <button data-go="/live">DANMAKU</button>
+  <button data-go="/cinema">CINEMA</button>
+  <button data-go="/profile">PROFILE</button>
+  <span class="sep"></span>
+  <button id="btnAndroid">安卓精简渲染：关</button>
+</div>
+
+<script>
+/* ==========================================================================
+ * 绝区零式 MG 路由转场 —— 原生 JS 参考实现
+ * 与 RibbonTransition.tsx 逻辑等价，无任何依赖。
+ * 样式全部来自 ribbon-transition.css，本页未覆盖任何套件规则。
+ * ========================================================================== */
+
+/* ── 时序常量（ms）。COVER_MS / REVEAL_MS 与 CSS 强绑定 ────────────────── */
+const COVER_MS = 400;                       // 黑主板 0.12s delay + 0.28s
+const COVER_FALLBACK_MS = COVER_MS + 500;
+const MIN_HOLD_MS = 440;                    // 满屏后最短停留（从满屏起算）
+const REVEAL_MS = 400;
+const REVEAL_FALLBACK_MS = REVEAL_MS + 500;
+const COMMIT_TIMEOUT_MS = 1500;
+const TEARDOWN_MS = 180;
+
+/* ── 每页文案卡 ────────────────────────────────────────────────────────── */
+const CARDS = {
+  "/":        { word: "HOME",    jp: "ホーム",         cn: "首页",     no: "01", mark: "◇" },
+  "/live":    { word: "DANMAKU", jp: "弾幕の壁",       cn: "弹幕墙",   no: "02", mark: "△" },
+  "/cinema":  { word: "CINEMA",  jp: "シアター",       cn: "影院模式", no: "03", mark: "▶" },
+  "/profile": { word: "PROFILE", jp: "プロフィール",   cn: "个人中心", no: "04", mark: "○" },
+};
+const FALLBACK_CARD = { word: "HANA", jp: "ホタル", cn: "萤火虫", no: "??", mark: "✦" };
+
+const PAGE_RING = ["/", "/live", "/cinema", "/profile"];
+const THEMES = ["pink", "purple", "green", "yellow"];
+const ROW_COUNT = 6;
+const STREAK_COUNT = 6;
+
+/* 演示页可手动开关；真实项目用 /android|harmony/i.test(navigator.userAgent) */
+let android = false;
+let cooldownMs = () => (android ? 480 : 260);
+
+/* ── 状态 ──────────────────────────────────────────────────────────────── */
+let curPath = "/";
+let running = false;
+let covered = false;
+let revealed = false;
+let gen = 0;
+let lastTheme = null;
+let pendingSwap = null;
+let timers = [];
+const addTimer = (id) => { timers.push(id); return id; };
+
+/* 根节点常驻 body，不随转场增删（铁律 3） */
+const root = document.createElement("div");
+root.className = "ptr-root ptr-idle";
+root.setAttribute("aria-hidden", "true");
+document.body.appendChild(root);
+
+/* ── 构建遮罩内容 ──────────────────────────────────────────────────────── */
+/* stage: 1 = 轻装饰（绶带/标题/角标/边条），2 = 全量（+ 巨字行 + 水印） */
+function buildOverlay(card, stage) {
+  const phraseRepeat = android ? 6 : 14;
+  const bigRepeat    = android ? 5 : 12;
+  const bandRepeat   = android ? 5 : 10;
+
+  const phrase     = `${card.word}  ${card.mark}  ${card.jp}  •  ${card.word}  ${card.mark}  ${card.cn}  •  `.repeat(phraseRepeat);
+  const bigPhrase  = `${card.word}  ${card.mark}  `.repeat(bigRepeat);
+  const bandPhrase = `${card.mark}  ${card.word}  ★  ${card.no}  ◆  ${card.jp}  ✦  `.repeat(bandRepeat);
+
+  const letters = Array.from(card.word);
+  // 与 CSS 的 .ptr-letter 参数强同步：0.3s + i*0.04s，单字 0.16s
+  const landDelay = 0.3 + (letters.length - 1) * 0.04 + 0.16;
+
+  const showHeavy = stage >= 2;
+
+  const bands = [1, 2, 3]
+    .map((n) => `<div class="ptr-band ptr-band-${n}"><span class="ptr-band-text">${esc(bandPhrase)}</span></div>`)
+    .join("");
+
+  const rows = showHeavy
+    ? `<div class="ptr-rows">${Array.from({ length: ROW_COUNT }, (_, i) => i + 1)
+        .map((n) => `<div class="ptr-row ptr-row-${n}"><span>${esc(n % 2 === 1 ? bigPhrase : phrase)}</span></div>`)
+        .join("")}</div>`
+    : "";
+
+  const letterSpans = letters
+    .map((ch, i) => `<span class="ptr-letter" style="--ptr-i:${i}">${esc(ch)}</span>`)
+    .join("");
+
+  const streaks = android
+    ? ""
+    : `<div class="ptr-streaks">${Array.from({ length: STREAK_COUNT }, (_, i) => i + 1)
+        .map((n) => `<span class="ptr-streak ptr-streak-${n}"></span>`)
+        .join("")}</div>`;
+
+  root.innerHTML = `
+    <div class="ptr-wipe ptr-wipe-a"><div class="ptr-wipe-fill"></div></div>
+    <div class="ptr-wipe ptr-wipe-b"><div class="ptr-wipe-fill"></div></div>
+    <div class="ptr-wipe ptr-wipe-main">
+      <div class="ptr-panel">
+        <div class="ptr-halftone"></div>
+        ${bands}
+        ${rows}
+        <div class="ptr-scanlines"></div>
+      </div>
+      ${showHeavy ? `<div class="ptr-mark">${esc(card.mark)}</div>` : ""}
+      <div class="ptr-title" style="--ptr-land:${landDelay}s">
+        <div class="ptr-title-word">
+          <span class="ptr-title-echo">${esc(card.word)}</span>
+          <span class="ptr-title-ghost ptr-title-ghost-c">${esc(card.word)}</span>
+          <span class="ptr-title-ghost ptr-title-ghost-m">${esc(card.word)}</span>
+          <span class="ptr-title-main">${letterSpans}</span>
+        </div>
+        <div class="ptr-title-hazard"></div>
+        <div class="ptr-title-chip"><span>${esc(card.jp)}</span><i></i><span>${esc(card.cn)}</span></div>
+      </div>
+      <div class="ptr-corner-no">${esc(card.no)}${card.no !== "EX" ? "<em>/ 04</em>" : ""}</div>
+      <div class="ptr-corner-loading">NOW LOADING ▸▸▸</div>
+      <div class="ptr-edge ptr-edge-left"></div>
+      <div class="ptr-edge ptr-edge-right"></div>
+    </div>
+    ${streaks}
+    <div class="ptr-flash"></div>
+  `;
+
+  /* 换页/揭开完成都由 animationend 驱动，不用定时器准点推进（铁律 1）。
+     ⚠️ 必须按 animationName 过滤：子元素动画会冒泡上来。
+     ⚠️ 监听挂在级联最末那一层：扫入是黑主板，扫出是彩带底层。 */
+  root.querySelector(".ptr-wipe-main").addEventListener("animationend", (e) => {
+    if (e.animationName === "ptr-wipe-in") proceedCover();
+  });
+  root.querySelector(".ptr-wipe-a").addEventListener("animationend", (e) => {
+    if (e.animationName === "ptr-wipe-out") finishReveal();
+  });
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ── 状态机 ────────────────────────────────────────────────────────────── */
+function start(href, dir) {
+  if (running) return;                       // 冷却期内静默忽略，不排队
+  const card = CARDS[href] || FALLBACK_CARD;
+  running = true;
+  covered = false;
+  revealed = false;
+  const myGen = ++gen;
+
+  pendingSwap = () => {
+    curPath = href;
+    renderPage(card);
+  };
+
+  // 随机换色，排除上一次
+  const pool = THEMES.filter((t) => t !== lastTheme);
+  const theme = pool[Math.floor(Math.random() * pool.length)];
+  lastTheme = theme;
+
+  root.className = `ptr-root ptr-theme-${theme}${android ? " ptr-android" : ""}`;
+  root.style.setProperty("--ptr-x", dir === "next" ? 1 : -1);
+
+  // 安卓装饰错峰：首帧只挂轻装饰，~110ms 后补重纹理
+  buildOverlay(card, android ? 1 : 2);
+  root.dataset.phase = "cover";
+
+  // 安卓装饰错峰第二波：起手 +2 帧后再等 ~110ms 补重纹理。
+  // 此刻主板还在盖屏途中（0.4s 才盖严），光栅化高峰被摊进扫入过程。
+  if (android) {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      addTimer(setTimeout(() => {
+        if (myGen === gen && root.dataset.phase === "cover") appendHeavyDecor(card);
+      }, 110));
+    }));
+  }
+
+  addTimer(setTimeout(() => { if (myGen === gen) proceedCover(); }, COVER_FALLBACK_MS));
+}
+
+/* 安卓第二波：把巨型文字行与水印补进已有的遮罩。
+   只往里插节点，不重建三层扫屏 —— 重建会让扫屏动画从头再跑一遍。 */
+function appendHeavyDecor(card) {
+  const panel = root.querySelector(".ptr-panel");
+  const main = root.querySelector(".ptr-wipe-main");
+  if (!panel || !main || panel.querySelector(".ptr-rows")) return;
+
+  const phrase    = `${card.word}  ${card.mark}  ${card.jp}  •  ${card.word}  ${card.mark}  ${card.cn}  •  `.repeat(6);
+  const bigPhrase = `${card.word}  ${card.mark}  `.repeat(5);
+
+  const rows = document.createElement("div");
+  rows.className = "ptr-rows";
+  rows.innerHTML = Array.from({ length: ROW_COUNT }, (_, i) => i + 1)
+    .map((n) => `<div class="ptr-row ptr-row-${n}"><span>${esc(n % 2 === 1 ? bigPhrase : phrase)}</span></div>`)
+    .join("");
+  panel.insertBefore(rows, panel.querySelector(".ptr-scanlines"));
+
+  const mark = document.createElement("div");
+  mark.className = "ptr-mark";
+  mark.textContent = card.mark;
+  main.insertBefore(mark, root.querySelector(".ptr-title"));
+}
+
+function proceedCover() {
+  if (covered || !running) return;
+  covered = true;
+  const myGen = gen;
+
+  // 在遮罩背后换页
+  const swapped = new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    addTimer(setTimeout(finish, COMMIT_TIMEOUT_MS));   // 超时兜底
+    try { pendingSwap && pendingSwap(); finish(); } catch { finish(); }
+  });
+  const held = new Promise((resolve) => addTimer(setTimeout(resolve, MIN_HOLD_MS)));
+
+  Promise.all([swapped, held]).then(() => {
+    // 双 rAF：让新页面在遮罩背后完成首绘，避免揭开时露出未绘制的底
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (myGen !== gen) return;
+      root.dataset.phase = "reveal";
+      addTimer(setTimeout(() => { if (myGen === gen) finishReveal(); }, REVEAL_FALLBACK_MS));
+    }));
+  });
+}
+
+function finishReveal() {
+  if (revealed || !running) return;
+  revealed = true;
+  // 先只隐藏（此刻所有层已扫出屏外，视觉零变化）
+  root.classList.add("ptr-idle");
+  root.dataset.phase = "idle";
+  // 图层树真正卸载推迟到冷却期中段
+  addTimer(setTimeout(() => { root.innerHTML = ""; }, TEARDOWN_MS));
+  addTimer(setTimeout(() => { running = false; }, cooldownMs()));
+}
+
+/* ── 假页面渲染 ────────────────────────────────────────────────────────── */
+function renderPage(card) {
+  document.getElementById("pgNo").textContent = card.no === "EX" ? "EX" : `${card.no} / 04`;
+  document.getElementById("pgWord").textContent = card.word;
+  document.getElementById("pgSub").textContent = `${card.jp} · ${card.cn}`;
+  document.querySelectorAll("#bar button[data-go]").forEach((b) => {
+    b.classList.toggle("on", b.dataset.go === curPath);
+  });
+}
+
+/* ── 触发：按钮 / 方向键 / 触屏轻扫 ───────────────────────────────────── */
+function go(href) {
+  if (href === curPath) return;
+  const from = PAGE_RING.indexOf(curPath);
+  const to = PAGE_RING.indexOf(href);
+  start(href, to > from ? "next" : "prev");
+}
+
+document.querySelectorAll("#bar button[data-go]").forEach((b) => {
+  b.addEventListener("click", () => go(b.dataset.go));
+});
+
+document.getElementById("btnAndroid").addEventListener("click", (e) => {
+  android = !android;
+  e.target.textContent = `安卓精简渲染：${android ? "开" : "关"}`;
+  e.target.classList.toggle("on", android);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const idx = PAGE_RING.indexOf(curPath);
+  const next = (idx + (e.key === "ArrowRight" ? 1 : -1) + PAGE_RING.length) % PAGE_RING.length;
+  go(PAGE_RING[next]);
+});
+
+/* 触屏轻扫：与 page-swipe.tsx 同一套阈值 */
+const MIN_DX = 72, MAX_DT = 600, DOMINANCE = 1.6;
+let sx = 0, sy = 0, st = 0, tracking = false;
+window.addEventListener("touchstart", (e) => {
+  tracking = false;
+  if (e.touches.length !== 1) return;
+  if (e.target.closest("#bar")) return;
+  const t = e.touches[0];
+  sx = t.clientX; sy = t.clientY; st = performance.now(); tracking = true;
+}, { passive: true });
+window.addEventListener("touchend", (e) => {
+  if (!tracking) return;
+  tracking = false;
+  const t = e.changedTouches[0];
+  if (!t) return;
+  const dx = t.clientX - sx, dy = t.clientY - sy;
+  if (performance.now() - st > MAX_DT) return;
+  if (Math.abs(dx) < MIN_DX || Math.abs(dx) < Math.abs(dy) * DOMINANCE) return;
+  const idx = PAGE_RING.indexOf(curPath);
+  const next = (idx + (dx < 0 ? 1 : -1) + PAGE_RING.length) % PAGE_RING.length;
+  go(PAGE_RING[next]);
+}, { passive: true });
+
+renderPage(CARDS["/"]);
+</script>
+</body>
+</html>

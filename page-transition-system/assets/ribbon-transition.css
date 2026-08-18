@@ -1,0 +1,767 @@
+/* ==========================================================================
+ * ribbon-transition.css —— 绝区零式 MG 路由转场（覆盖 → 换页 → 揭开）
+ * 从 hanaforum 站点 app/globals.css 的 .ptr-* 段抽取，数值与原站一致。
+ *
+ * 依赖：无（纯 CSS）。配套的 JS 驱动见 RibbonTransition.tsx，
+ *       原生 JS 参考实现见 demo.html。用法与调参见 README.md。
+ *
+ * 【四条铁律，违反必炸】
+ * 1. 换页时机由 animationend 驱动，绝不用定时器准点换页。
+ *    主线程繁忙时 CSS 动画会比 JS 定时器晚开跑，准点换页会在屏幕没遮严时
+ *    露出换页瞬间 → 概率性闪屏（安卓最明显）。定时器只作兜底。
+ * 2. 全程只动 transform / opacity。无 backdrop-filter、filter、
+ *    preserve-3d、clip-path。斜切由内层【静态】skewX 承担、位移由外层
+ *    translateX 承担，两层不能合并（合并后每帧重算复合矩阵）。
+ * 3. 遮罩根节点常驻 body 不增删。反复增删 fixed 满屏节点会让层叠上下文
+ *    来回变动 → 整树重新分层（安卓闪屏诱因）。空闲态用 .ptr-idle。
+ * 4. 每个大面积色层都要单独声明不透明 background-color，渐变用
+ *    background-image 叠在其上。合成器会记住底色，缺瓦片时按底色填充，
+ *    白花屏退化成"暗色一闪"。
+ *
+ * 【时序契约】三层扫屏 = 单层 0.28s + 级联延迟 0/0.06/0.12s，
+ * 末层结束即 0.4s = 满屏点。改这里必须同步 JS 侧的 COVER_MS / REVEAL_MS。
+ * ========================================================================== */
+
+/* ==========================================================================
+ * 1. 根节点与主题色变量组
+ * ========================================================================== */
+.ptr-root {
+  position: fixed;
+  inset: 0;
+  z-index: 20000; /* 盖过一切浮层，转场期间拦截全部交互。按自己项目的层级调 */
+  overflow: hidden;
+  pointer-events: auto;
+  /* 布局/绘制完全自包含：遮罩后面新页面挂载引发的失效不会波及覆盖层，
+     覆盖层的持续动画也不回头打扰页面（低端安卓收益明显） */
+  contain: strict;
+
+  /* 默认主题 = 粉。-rgb 三元组供 rgba(var(),a) 调透明度
+     （兼容旧 WebView，不依赖 color-mix） */
+  --ptr-accent: #ff2d78;
+  --ptr-accent-rgb: 255, 45, 120;
+  --ptr-soft-rgb: 255, 109, 168;
+  --ptr-paper: #fff3f9;
+  --ptr-flash-c: #ffe1ef;
+  --ptr-split: #29e0ff;
+  --ptr-panel-a: #221019;
+  --ptr-panel-b: #120712;
+  --ptr-panel-c: #09040a;
+}
+
+/* 空闲态：根节点常驻 body（见铁律 3），整层隐藏、不拦交互；
+   内容由 JS 在空闲时不挂载 → 零渲染开销。
+   揭开结束的瞬间也先切到本态（层已全部扫出屏外，视觉零变化），
+   图层树的真正卸载推迟到冷却期中段。 */
+.ptr-root.ptr-idle {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ptr-theme-purple {
+  --ptr-accent: #a85cff;
+  --ptr-accent-rgb: 168, 92, 255;
+  --ptr-soft-rgb: 199, 148, 255;
+  --ptr-paper: #f7f2ff;
+  --ptr-flash-c: #ecdfff;
+  --ptr-split: #2dffc8;
+  --ptr-panel-a: #1c1026;
+  --ptr-panel-b: #110a1c;
+  --ptr-panel-c: #08040f;
+}
+.ptr-theme-green {
+  --ptr-accent: #2ee36b;
+  --ptr-accent-rgb: 46, 227, 107;
+  --ptr-soft-rgb: 122, 240, 166;
+  --ptr-paper: #f0fdf4;
+  --ptr-flash-c: #dcffe8;
+  --ptr-split: #29b6ff;
+  --ptr-panel-a: #0f2017;
+  --ptr-panel-b: #08150e;
+  --ptr-panel-c: #030a06;
+}
+.ptr-theme-yellow {
+  --ptr-accent: #ffd428;
+  --ptr-accent-rgb: 255, 212, 40;
+  --ptr-soft-rgb: 255, 231, 122;
+  --ptr-paper: #fffbeb;
+  --ptr-flash-c: #fff3c4;
+  --ptr-split: #ff4fd8;
+  --ptr-panel-a: #221d0e;
+  --ptr-panel-b: #161106;
+  --ptr-panel-c: #0a0703;
+}
+
+/* 合成稳定性（治闪动/鬼影，非减配）：只给【跑 transform 动画】的层显式关背面渲染。
+   安卓 WebView 在位移动画下若图层不是稳定 3D 合成层，会出现子像素重影、
+   上一帧纹理残留、起始瞬间闪一下。纯合成提示、视觉零变化，iOS 同样受益。
+   ⚠️ 仅 opacity 动画或静态元素不要加（加了无益，反而可能多裂图层）。 */
+.ptr-wipe,
+.ptr-row,
+.ptr-band,
+.ptr-mark,
+.ptr-letter,
+.ptr-title-echo,
+.ptr-title-chip,
+.ptr-streak {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  -webkit-transform-style: flat;
+  transform-style: flat;
+}
+
+/* ==========================================================================
+ * 2. 三层交错扫屏
+ * 外层只动 translateX（唯一合成属性），斜切由内层静态 skew 承担
+ * ========================================================================== */
+.ptr-wipe {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+.ptr-root[data-phase="cover"] .ptr-wipe {
+  animation: ptr-wipe-in 0.28s cubic-bezier(0.7, 0, 0.2, 1) both;
+}
+.ptr-root[data-phase="reveal"] .ptr-wipe {
+  animation: ptr-wipe-out 0.28s cubic-bezier(0.7, 0, 0.2, 1) both;
+}
+/* 扫入：主色领跑 → 白 → 黑主板殿后（殿后层落位 = 屏幕真正遮严）；
+   扫出反序：黑板先走，两条彩带在它身后依次露脸再追走 = 拖尾彩条 */
+.ptr-root[data-phase="cover"] .ptr-wipe-a { animation-delay: 0s; }
+.ptr-root[data-phase="cover"] .ptr-wipe-b { animation-delay: 0.06s; }
+.ptr-root[data-phase="cover"] .ptr-wipe-main { animation-delay: 0.12s; }
+.ptr-root[data-phase="reveal"] .ptr-wipe-main { animation-delay: 0s; }
+.ptr-root[data-phase="reveal"] .ptr-wipe-b { animation-delay: 0.06s; }
+.ptr-root[data-phase="reveal"] .ptr-wipe-a { animation-delay: 0.12s; }
+
+/* --ptr-x：1 = 去下一页（从右扫入、向左扫出），-1 镜像 */
+@keyframes ptr-wipe-in {
+  from { transform: translate3d(calc(140% * var(--ptr-x)), 0, 0); }
+  to   { transform: translate3d(0, 0, 0); }
+}
+@keyframes ptr-wipe-out {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(calc(-140% * var(--ptr-x)), 0, 0); }
+}
+
+/* 斜切色块本体：四周出血保证斜边转角不漏底。
+   出血值配合 skewX(-10deg) 算出，改斜角要重算 */
+.ptr-wipe-fill,
+.ptr-panel {
+  position: absolute;
+  top: -12%;
+  bottom: -12%;
+  left: -25%;
+  right: -25%;
+  transform: skewX(-10deg);
+}
+/* 底色 + 渐变分开声明（铁律 4） */
+.ptr-wipe-a .ptr-wipe-fill {
+  background-color: var(--ptr-accent);
+  background-image: linear-gradient(105deg, var(--ptr-accent), rgb(var(--ptr-soft-rgb)) 60%, var(--ptr-accent));
+}
+.ptr-wipe-b .ptr-wipe-fill {
+  background: var(--ptr-paper);
+}
+
+/* 黑主板：近黑底（随主题微调色相），巨型文字/纹理都被它裁切 */
+.ptr-panel {
+  background-color: var(--ptr-panel-b);
+  background-image: radial-gradient(130% 100% at 50% 40%, var(--ptr-panel-a) 0%, var(--ptr-panel-b) 55%, var(--ptr-panel-c) 100%);
+  overflow: hidden;
+}
+
+/* ==========================================================================
+ * 3. 主板装饰：半调网点 + 斜向百叶窗
+ * 两层静态背景叠加、随主板移动，零逐帧开销
+ * ========================================================================== */
+.ptr-halftone {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle, rgba(var(--ptr-soft-rgb), 0.16) 1.2px, transparent 1.3px),
+    repeating-linear-gradient(
+      -55deg,
+      rgba(255, 255, 255, 0.04) 0,
+      rgba(255, 255, 255, 0.04) 30px,
+      transparent 30px,
+      transparent 60px
+    );
+  background-size: 16px 16px, auto;
+}
+
+/* ==========================================================================
+ * 4. 胶片绶带
+ * 实色带身 + 上下两排黑冲孔 + 等距帧分隔线 + 带内黑字，
+ * rotate(-12deg) 斜穿主板，1/3 向左、2 向右交错反向持续滚动。
+ * 带身/冲孔/分隔线全是静态背景渐变（一次光栅化），滚动走合成线程；
+ * 淡入是并行的第二条 opacity 动画，与 transform 滚动互不抢。
+ * 两侧各出血 15%、滚动振幅 ±6%，带边缘永不入画；转场存活 <1.3s
+ * 循环跑不完，无需关心接缝。
+ * ========================================================================== */
+.ptr-band {
+  position: absolute;
+  left: -15%;
+  right: -15%;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  will-change: transform;
+  background-color: rgb(var(--ptr-accent-rgb));
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(18, 6, 13, 0.55) 0,
+      rgba(18, 6, 13, 0.55) 5px,
+      transparent 5px,
+      transparent 150px
+    ),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 55%);
+}
+/* 上下两排冲孔（胶片齿孔） */
+.ptr-band::before,
+.ptr-band::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 13%;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(13, 4, 9, 0.9) 0,
+    rgba(13, 4, 9, 0.9) 14px,
+    transparent 14px,
+    transparent 30px
+  );
+}
+.ptr-band::before { top: 6%; }
+.ptr-band::after { bottom: 6%; }
+
+.ptr-band-text {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: clamp(15px, 4.5vh, 30px);
+  font-weight: 900;
+  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 0.34em;
+  line-height: 1;
+  color: rgba(18, 6, 13, 0.88);
+  user-select: none;
+}
+
+@keyframes ptr-band-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+/* ⚠️ 旋转角写在关键帧里，去掉动画时必须手工补回 transform: rotate(-12deg) */
+@keyframes ptr-band-drift {
+  from { transform: translate3d(6%, 0, 0) rotate(-12deg); }
+  to   { transform: translate3d(-6%, 0, 0) rotate(-12deg); }
+}
+@keyframes ptr-band-drift-rev {
+  from { transform: translate3d(-6%, 0, 0) rotate(-12deg); }
+  to   { transform: translate3d(6%, 0, 0) rotate(-12deg); }
+}
+
+.ptr-band-1 {
+  top: 4%;
+  height: 16%;
+  animation:
+    ptr-band-fade 0.4s ease-out 0.12s both,
+    ptr-band-drift 3s linear infinite;
+}
+/* 中带从标题背后穿过，反向滚动 */
+.ptr-band-2 {
+  top: 40%;
+  height: 18%;
+  animation:
+    ptr-band-fade 0.4s ease-out 0.2s both,
+    ptr-band-drift-rev 3.6s linear infinite;
+}
+.ptr-band-3 {
+  top: 76%;
+  height: 15%;
+  animation:
+    ptr-band-fade 0.4s ease-out 0.28s both,
+    ptr-band-drift 3.2s linear infinite;
+}
+
+/* 粗百叶窗扫描线：压在文字上增加胶片感 */
+.ptr-scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.2),
+    rgba(0, 0, 0, 0.2) 2px,
+    transparent 2px,
+    transparent 6px
+  );
+}
+
+/* ==========================================================================
+ * 5. 巨型镂空描边文字行
+ * 容器先抵消主板 skew 再旋转（乘积 = 纯 rotate，字形不被剪切变形）
+ * ========================================================================== */
+.ptr-rows {
+  position: absolute;
+  inset: -30%;
+  transform: skewX(10deg) rotate(-12deg);
+}
+
+/* 行宽收着点 —— 行越宽 GPU 纹理越大。行是透明文字无底色，
+   慢网极端停留下文字滚出边角也不可见 */
+.ptr-row {
+  position: absolute;
+  left: -25%;
+  right: -25%;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  will-change: transform;
+  font-weight: 900;
+  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  user-select: none;
+}
+.ptr-row > span {
+  flex-shrink: 0;
+  padding: 0 1.5rem;
+}
+
+@keyframes ptr-row-slide {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(-50%, 0, 0); }
+}
+@keyframes ptr-row-slide-rev {
+  from { transform: translate3d(-50%, 0, 0); }
+  to   { transform: translate3d(0, 0, 0); }
+}
+
+/* 奇数行 = 巨型镂空描边大字，偶数行 = 实心小字短语，方向交错 */
+.ptr-row-1 {
+  top: 0%;
+  height: 18%;
+  font-size: clamp(56px, 12vw, 130px);
+  -webkit-text-stroke: 2px rgba(255, 255, 255, 0.3);
+  color: transparent;
+  animation: ptr-row-slide 6s linear infinite;
+}
+.ptr-row-2 {
+  top: 19%;
+  height: 7%;
+  font-size: clamp(14px, 2.4vw, 24px);
+  color: rgba(var(--ptr-soft-rgb), 0.6);
+  animation: ptr-row-slide-rev 5s linear infinite;
+}
+/* 主镂空行：主题色描边大字，落在屏幕中带、从标题卡背后穿过 */
+.ptr-row-3 {
+  top: 27%;
+  height: 24%;
+  font-size: clamp(80px, 17vw, 190px);
+  -webkit-text-stroke: 2.5px rgba(var(--ptr-accent-rgb), 0.75);
+  color: transparent;
+  animation: ptr-row-slide-rev 6.5s linear infinite;
+}
+.ptr-row-4 {
+  top: 52%;
+  height: 7%;
+  font-size: clamp(14px, 2.4vw, 24px);
+  color: rgba(255, 255, 255, 0.42);
+  animation: ptr-row-slide 5.5s linear infinite;
+}
+.ptr-row-5 {
+  top: 60%;
+  height: 20%;
+  font-size: clamp(64px, 14vw, 150px);
+  -webkit-text-stroke: 2px rgba(255, 255, 255, 0.42);
+  color: transparent;
+  animation: ptr-row-slide 7.5s linear infinite;
+}
+.ptr-row-6 {
+  top: 82%;
+  height: 7%;
+  font-size: clamp(14px, 2.4vw, 24px);
+  color: rgba(var(--ptr-soft-rgb), 0.55);
+  animation: ptr-row-slide-rev 6s linear infinite;
+}
+
+/* ==========================================================================
+ * 6. 巨型水印符号
+ * 2.6s 跑完但转场只活 ~1.3s —— 故意的，只取曲线前半段，
+ * 看到的是持续缓慢的旋转放大，永远不会"演完"
+ * ========================================================================== */
+.ptr-mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  font-size: clamp(260px, 68vh, 640px);
+  line-height: 1;
+  font-weight: 900;
+  -webkit-text-stroke: 2px rgba(var(--ptr-accent-rgb), 0.4);
+  color: transparent;
+  user-select: none;
+  will-change: transform;
+  animation: ptr-mark-drift 2.6s cubic-bezier(0.2, 0.6, 0.3, 1) both;
+}
+@keyframes ptr-mark-drift {
+  from { opacity: 0; transform: translate3d(-50%, -50%, 0) rotate(-10deg) scale(0.9); }
+  20%  { opacity: 1; }
+  to   { opacity: 1; transform: translate3d(-50%, -50%, 0) rotate(8deg) scale(1.05); }
+}
+
+/* ==========================================================================
+ * 7. 标题卡入场链
+ * 容器静态定格 -2°，入场冲击全部交给子元素：
+ * 逐字砸入 → 末字落位（--ptr-land，JS 按字数算好下发）瞬间
+ * RGB 错位残影闪 + 镂空回声向外盖章。
+ * ⚠️ 字母延迟 0.3s + i*0.04s、单字 0.16s 与 JS 的 landDelay 公式强同步，
+ *    改一处必须两边一起改。
+ * ========================================================================== */
+.ptr-title {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(10px, 2.4vw, 20px);
+  transform: translate3d(-50%, -50%, 0) rotate(-2deg);
+}
+
+.ptr-title-word {
+  position: relative;
+  font-size: clamp(48px, 14vw, 130px);
+  font-weight: 900;
+  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 逐字砸入：上方放大斜插 → 过冲压扁 → 回正。
+   一次性动画不挂 will-change（动画期间浏览器自行临时提升） */
+.ptr-letter {
+  display: inline-block;
+  animation: ptr-letter-slam 0.16s cubic-bezier(0.2, 0.7, 0.3, 1)
+    calc(0.3s + var(--ptr-i) * 0.04s) both;
+}
+@keyframes ptr-letter-slam {
+  from { opacity: 0; transform: translate3d(0, -0.4em, 0) scale(1.7) rotate(7deg); }
+  62%  { opacity: 1; transform: translate3d(0, 0.04em, 0) scale(0.94) rotate(-2deg); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0) scale(1) rotate(0deg); }
+}
+
+/* 镂空回声：末字落位瞬间从主字背后向外「盖章」撑出的描边重影 */
+.ptr-title-echo {
+  position: absolute;
+  left: 0;
+  top: 0;
+  -webkit-text-stroke: 2px rgba(255, 255, 255, 0.4);
+  color: transparent;
+  animation: ptr-echo-stamp 0.24s cubic-bezier(0.2, 1, 0.3, 1) var(--ptr-land) both;
+}
+@keyframes ptr-echo-stamp {
+  from { opacity: 0; transform: translate(0, 0) scale(1); }
+  to   { opacity: 1; transform: translate(-0.05em, -0.07em) scale(1.06); }
+}
+
+/* RGB 错位残影：落位瞬间青/品红双拷贝硬闪两下即灭（纯 opacity） */
+.ptr-title-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  animation: ptr-ghost-flick 0.22s linear var(--ptr-land) both;
+}
+.ptr-title-ghost-c {
+  color: var(--ptr-split);
+  transform: translate(-0.045em, 0.03em);
+}
+.ptr-title-ghost-m {
+  color: var(--ptr-accent);
+  transform: translate(0.045em, -0.02em);
+}
+@keyframes ptr-ghost-flick {
+  0%, 100% { opacity: 0; }
+  10%, 28% { opacity: 0.85; }
+  34%, 50% { opacity: 0; }
+  56%, 70% { opacity: 0.5; }
+  78% { opacity: 0; }
+}
+
+/* 实心主字：贴纸式硬偏移双重投影。
+   用 text-shadow 而非独立图层 —— 它随字形走，逐字动画下天然跟随 */
+.ptr-title-main {
+  position: relative;
+  color: #fff;
+  text-shadow:
+    0.045em 0.045em 0 var(--ptr-accent),
+    0.09em 0.09em 0 rgba(var(--ptr-accent-rgb), 0.35);
+}
+
+/* 斜纹 hazard 条：静态条纹背景零逐帧开销，入场只做 scaleX 拉开
+   （条纹随之横向展开，自带扫掠感） */
+.ptr-title-hazard {
+  width: clamp(150px, 38vw, 340px);
+  height: clamp(7px, 1.4vw, 11px);
+  background: repeating-linear-gradient(
+    -55deg,
+    var(--ptr-accent) 0,
+    var(--ptr-accent) 10px,
+    rgba(var(--ptr-accent-rgb), 0.16) 10px,
+    rgba(var(--ptr-accent-rgb), 0.16) 20px
+  );
+  transform-origin: left center;
+  animation: ptr-hazard-in 0.26s cubic-bezier(0.2, 1, 0.3, 1) 0.52s both;
+}
+@keyframes ptr-hazard-in {
+  from { opacity: 0; transform: skewX(-10deg) scaleX(0); }
+  to   { opacity: 1; transform: skewX(-10deg) scaleX(1); }
+}
+
+/* 副标签：主题色底黑字斜切小条，标题落位后顺滑动方向滑入 */
+.ptr-title-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8em;
+  padding: 0.42em 1.3em;
+  background: var(--ptr-accent);
+  color: #14060e;
+  font-size: clamp(12px, 3vw, 18px);
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  transform: skewX(-10deg);
+  box-shadow: 0.25em 0.25em 0 rgba(255, 255, 255, 0.22);
+  animation: ptr-chip-in 0.3s cubic-bezier(0.2, 1.2, 0.4, 1) 0.46s both;
+}
+.ptr-title-chip > i {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(20, 6, 14, 0.55);
+}
+@keyframes ptr-chip-in {
+  from { opacity: 0; transform: skewX(-10deg) translate3d(calc(36px * var(--ptr-x)), 0, 0); }
+  to   { opacity: 1; transform: skewX(-10deg) translate3d(0, 0, 0); }
+}
+
+/* ==========================================================================
+ * 8. 角标
+ * ========================================================================== */
+.ptr-corner-no {
+  position: absolute;
+  top: max(4.5%, env(safe-area-inset-top));
+  right: 6%;
+  font-size: clamp(28px, 7vw, 56px);
+  font-weight: 900;
+  font-style: italic;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0.08em 0.08em 0 rgba(var(--ptr-accent-rgb), 0.8);
+  animation: ptr-fade-in 0.25s ease-out 0.4s both;
+}
+.ptr-corner-no > em {
+  font-size: 0.42em;
+  color: rgba(255, 255, 255, 0.55);
+  text-shadow: none;
+  margin-left: 0.3em;
+}
+.ptr-corner-loading {
+  position: absolute;
+  bottom: max(5%, env(safe-area-inset-bottom));
+  left: 6%;
+  font-size: clamp(11px, 2.8vw, 15px);
+  font-weight: 800;
+  letter-spacing: 0.32em;
+  color: rgba(var(--ptr-soft-rgb), 0.9);
+  animation: ptr-blink 0.8s linear 0.4s infinite both;
+}
+@keyframes ptr-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes ptr-blink {
+  0%, 55% { opacity: 1; }
+  56%, 100% { opacity: 0.25; }
+}
+
+/* 主板两侧霓虹描边条：与主板同高同斜角，只在扫动途中露脸 */
+.ptr-edge {
+  position: absolute;
+  top: -12%;
+  bottom: -12%;
+  width: clamp(6px, 1.2vw, 14px);
+  transform: skewX(-10deg);
+  background: linear-gradient(180deg, var(--ptr-accent), rgb(var(--ptr-soft-rgb)) 50%, var(--ptr-accent));
+  box-shadow: 0 0 32px rgba(var(--ptr-accent-rgb), 0.7);
+}
+.ptr-edge-left { left: -25%; }
+.ptr-edge-right { right: -25%; }
+
+/* ==========================================================================
+ * 9. 速度线
+ * 基线 transform = 飞行起点（动画 delay 期间停在屏外不露脸）
+ * ========================================================================== */
+.ptr-streaks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ptr-streak {
+  position: absolute;
+  left: -45vw;
+  height: 3px;
+  border-radius: 2px;
+  transform: translate3d(calc(180vw * var(--ptr-x)), 0, 0);
+  will-change: transform;
+  animation: ptr-streak-fly 0.6s linear infinite;
+}
+@keyframes ptr-streak-fly {
+  from { transform: translate3d(calc(180vw * var(--ptr-x)), 0, 0); }
+  to   { transform: translate3d(calc(-180vw * var(--ptr-x)), 0, 0); }
+}
+.ptr-streak-1 { top: 9%;  width: 34vw; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.95), transparent); animation-duration: 0.55s; }
+.ptr-streak-2 { top: 22%; width: 20vw; background: linear-gradient(90deg, transparent, rgba(var(--ptr-soft-rgb), 0.9), transparent); animation-duration: 0.7s; animation-delay: 0.18s; }
+.ptr-streak-3 { top: 41%; width: 28vw; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.8), transparent); animation-duration: 0.62s; animation-delay: 0.34s; }
+.ptr-streak-4 { top: 58%; width: 16vw; height: 2px; background: linear-gradient(90deg, transparent, rgba(var(--ptr-accent-rgb), 0.95), transparent); animation-duration: 0.5s; animation-delay: 0.1s; }
+.ptr-streak-5 { top: 74%; width: 30vw; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.85), transparent); animation-duration: 0.74s; animation-delay: 0.26s; }
+.ptr-streak-6 { top: 88%; width: 22vw; height: 2px; background: linear-gradient(90deg, transparent, rgba(var(--ptr-soft-rgb), 0.85), transparent); animation-duration: 0.58s; animation-delay: 0.44s; }
+
+/* ==========================================================================
+ * 10. 满屏冲击闪
+ * 黑主板落位瞬间一次低透明度闪光。它在 .ptr-root 下、不在 .ptr-wipe 里，
+ * 不受 [data-phase] 选择器影响 → 挂载后只跑一次，phase 切换不重启
+ * ========================================================================== */
+.ptr-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--ptr-flash-c);
+  opacity: 0;
+  animation: ptr-flash 0.26s ease-out 0.38s both;
+}
+@keyframes ptr-flash {
+  0% { opacity: 0; }
+  35% { opacity: 0.22; }
+  100% { opacity: 0; }
+}
+
+/* ==========================================================================
+ * 11. 安卓 WebView 精简渲染（.ptr-android）—— 装饰全保留版
+ * --------------------------------------------------------------------------
+ * 这一节不是可选项，删了低端安卓连续快滑会花屏。真机花屏形态：
+ * 主板大图层瓦片光栅化跟不上 → 缺瓦片透出下层白纸层（整块露白），
+ * 而独立合成层的绶带/大字反而画出来了 → 错位叠画。三路对策：
+ *   · 兜底色：见铁律 4，已写在各自规则里（对所有平台生效）
+ *   · 削峰：满屏渐变改实色（本节）
+ *   · 错峰：装饰分两波挂载（JS 侧 decorStage，见 RibbonTransition.tsx）
+ * 核心三层扫屏的 will-change 与动画保留 —— 它才是位移主体。
+ * ========================================================================== */
+.ptr-root.ptr-android .ptr-row,
+.ptr-root.ptr-android .ptr-band-text {
+  text-rendering: optimizeSpeed;
+}
+
+/* —— 满屏渐变改实色 ——
+   主板径向渐变在 150vw × 124vh 的出血面积上逐瓦片光栅化，是主板图层最大的
+   一笔开销。改实色后 Chromium 走 solid-color 快路径（无需分配纹理），
+   装饰照常叠在上面；取的是渐变中间档色，观感几乎不变。 */
+.ptr-root.ptr-android .ptr-panel {
+  background-image: none;
+}
+.ptr-root.ptr-android .ptr-wipe-a .ptr-wipe-fill {
+  background-image: none;
+}
+
+/* —— 胶片绶带静态化 ——
+   持续漂移 = 3 条约 195vw 宽的独立合成层全程常驻。静态定格后无动画无
+   will-change → 并回主板图层；斜向动感由主板自身的扫入/扫出带出。 */
+.ptr-root.ptr-android .ptr-band {
+  will-change: auto;
+  /* 漂移 keyframes 里带着 rotate(-12deg)，去掉动画后要补回斜角 */
+  transform: rotate(-12deg);
+}
+.ptr-root.ptr-android .ptr-band-1 { animation: ptr-band-fade 0.4s ease-out 0.12s both; }
+.ptr-root.ptr-android .ptr-band-2 { animation: ptr-band-fade 0.4s ease-out 0.2s both; }
+.ptr-root.ptr-android .ptr-band-3 { animation: ptr-band-fade 0.4s ease-out 0.28s both; }
+
+/* —— 文字行第二波挂载的淡入 ——
+   行在安卓上比遮罩晚 ~140ms 才挂（JS 侧 decorStage=2），带 0.22s 淡入：
+   一来把"晚到"包装成入场节奏，二来行纹理若光栅化再晚一两帧，
+   淡入尚未结束、缺字不可察觉。
+   偶数小字行静态化（内容是均匀重复短语，定格视觉无差别，少 3 条位移合成层），
+   奇数大字行交错滚动保留 —— 动感主体。 */
+.ptr-root.ptr-android .ptr-row-2,
+.ptr-root.ptr-android .ptr-row-4,
+.ptr-root.ptr-android .ptr-row-6 {
+  animation: ptr-band-fade 0.22s ease-out both;
+  will-change: auto;
+}
+.ptr-root.ptr-android .ptr-row-1 {
+  animation: ptr-row-slide 6s linear infinite, ptr-band-fade 0.22s ease-out both;
+}
+.ptr-root.ptr-android .ptr-row-3 {
+  animation: ptr-row-slide-rev 6.5s linear infinite, ptr-band-fade 0.22s ease-out both;
+}
+.ptr-root.ptr-android .ptr-row-5 {
+  animation: ptr-row-slide 7.5s linear infinite, ptr-band-fade 0.22s ease-out both;
+}
+
+/* —— 文字行收窄 ——
+   行越宽合成层纹理越大（原 ±25% ≈ 360vw → 288vw）。滚动位移是行宽百分比、
+   同步变小，视觉速度基本不变。⚠️ JS 侧 bigRepeat 已按 288vw 校准，
+   改回原宽或改字号要重新校准，太短会在左滑行的右端露出空档。 */
+.ptr-root.ptr-android .ptr-row {
+  left: -10%;
+  right: -10%;
+}
+
+/* 霓虹边：模糊半径越大光栅化越贵，安卓收窄（仍有发光感，静帧基本无差别） */
+.ptr-root.ptr-android .ptr-edge {
+  box-shadow: 0 0 12px rgba(var(--ptr-accent-rgb), 0.7);
+}
+
+/* —— 巨型镂空描边文字行：实心化降光栅化成本 ——
+   -webkit-text-stroke 要为每个字形生成独立描边路径纹理，成本远高于实心填充。
+   3 条巨型镂空行是遮罩存活期间最重的单层纹理来源。改半透明实心后视觉存在感
+   不减（实心比描边更显眼），单层纹理复杂度骤降。桌面/iOS 保留完整镂空描边。 */
+.ptr-root.ptr-android .ptr-row-1,
+.ptr-root.ptr-android .ptr-row-3,
+.ptr-root.ptr-android .ptr-row-5 {
+  -webkit-text-stroke: 0;
+}
+.ptr-root.ptr-android .ptr-row-1 { color: rgba(255, 255, 255, 0.26); }
+.ptr-root.ptr-android .ptr-row-3 { color: rgba(var(--ptr-accent-rgb), 0.5); }
+.ptr-root.ptr-android .ptr-row-5 { color: rgba(255, 255, 255, 0.38); }
+
+/* —— 巨型水印符号瘦身 ——
+   原最大 640px 镂空描边，单元素纹理面积极大。收窄字号上限并改实心低透明填充，
+   纹理瘦身同时保留水印的视觉重量（仍居中、仍大、仍带主题色）。 */
+.ptr-root.ptr-android .ptr-mark {
+  -webkit-text-stroke: 0;
+  font-size: clamp(180px, 42vh, 380px);
+  color: rgba(var(--ptr-accent-rgb), 0.16);
+}
+
+/* ==========================================================================
+ * 12. 无障碍
+ * 偏好减少动效时不应该走这套转场 —— 正确做法是在 JS 入口直接放行普通跳转
+ * （见 RibbonTransition.tsx 的 navigate）。这里只兜底：万一还是挂上了，
+ * 至少把常驻无限动画停掉，别让用户对着一屏乱转的东西。
+ * ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .ptr-band,
+  .ptr-row,
+  .ptr-streak,
+  .ptr-mark,
+  .ptr-corner-loading {
+    animation: none !important;
+  }
+  .ptr-band { transform: rotate(-12deg); }
+  .ptr-mark { opacity: 1; transform: translate3d(-50%, -50%, 0); }
+}
