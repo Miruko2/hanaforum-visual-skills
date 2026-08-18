@@ -16,15 +16,15 @@
 把本仓库克隆到代理会读的 skills 目录：
 
 ```bash
-# Kiro / 本项目约定
-git clone <this repo> .kiro/skills
+REPO=https://github.com/Miruko2/hanaforum-visual-skills.git
 
-# Cursor（用户级）
-git clone <this repo> ~/.cursor/skills/hanako-visual
-
-# Claude Code（项目级）
-git clone <this repo> .claude/skills
+git clone $REPO .kiro/skills                        # Kiro / 本项目约定
+git clone $REPO ~/.cursor/skills/hanaforum-visual   # Cursor（用户级）
+git clone $REPO .claude/skills                      # Claude Code（项目级）
 ```
+
+⚠️ 克隆到站点仓库的 `.kiro/skills` 下时不会互相干扰：站点的 `.gitignore` 把整个 `.kiro/`
+排除了，两个 git 仓库物理嵌套但各管各的。
 
 只想要成品代码、不关心文档的，直接拿两个 `assets/` 目录：
 `site-visual-system/assets/`（毛玻璃 + 高斯模糊动效套件，纯 CSS + 8 个零依赖 React 组件）、
